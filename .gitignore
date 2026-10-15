@@ -1,0 +1,12 @@
+# Patient data, generated artifacts and downloaded executables
+/data/
+/deidentified/
+/metadata/
+/audit/
+/outputs/
+/models/
+/tools/
+/_deid_work/
+__pycache__/
+*.py[cod]
+.env
