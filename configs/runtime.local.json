@@ -1,0 +1,6 @@
+﻿{
+    "runtime_root":  "E:\\Conda",
+    "conda_root":  "E:\\Conda\\miniconda3",
+    "environment_prefix":  "E:\\Conda\\envs\\cmvd",
+    "python_path":  "E:\\Conda\\envs\\cmvd\\python.exe"
+}
