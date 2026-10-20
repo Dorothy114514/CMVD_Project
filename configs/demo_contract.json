@@ -1,0 +1,27 @@
+{
+  "schema_version": "0.1",
+  "purpose": "synthetic_framework_only",
+  "groups": {
+    "risk_factors": {
+      "age_years": {"unit": "year", "min": 0, "max": 120},
+      "hypertension": {"unit": "binary", "allowed": [0, 1]},
+      "diabetes": {"unit": "binary", "allowed": [0, 1]},
+      "smoking": {"unit": "binary", "allowed": [0, 1]}
+    },
+    "clinical_features": {
+      "rest_heart_rate_bpm": {"unit": "bpm", "min": 1, "max": 300},
+      "ldl_c_mmol_l": {"unit": "mmol/L", "min": 0, "max": 30}
+    },
+    "pet_perfusion": {
+      "rest_mbf": {"unit": "mL/min/g", "min_exclusive": 0},
+      "stress_mbf": {"unit": "mL/min/g", "min_exclusive": 0}
+    },
+    "mr_perfusion": {
+      "rest_normalized_upslope": {"unit": "s^-1", "min_exclusive": 0},
+      "stress_normalized_upslope": {"unit": "s^-1", "min_exclusive": 0}
+    }
+  },
+  "feature_order": ["age_years", "hypertension", "diabetes", "smoking", "rest_heart_rate_bpm", "ldl_c_mmol_l", "pet_mfr", "mr_mpri"],
+  "perfusion_provenance_fields": ["method", "source_reference", "qc_status", "reviewed_by"],
+  "notes": ["Ranges are engineering checks, not diagnostic thresholds or enrollment criteria.", "MR MPRI is semiquantitative; it is not absolute MBF or quantitative MPR.", "All fields are required in v0.1; no imputation is implemented."]
+}

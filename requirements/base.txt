@@ -1,0 +1,7 @@
+# Direct project dependencies; tested on Windows x64 / Python 3.12.15.
+numpy==2.5.4
+pandas==3.0.6
+pydicom==3.0.1
+scikit-learn==1.9.1
+PySide6==6.10.3
+pyqtgraph==0.14.0

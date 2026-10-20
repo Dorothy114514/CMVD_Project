@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "contract_id": "d5-candidate-v1",
+  "status": "candidate_pending_hospital_confirmation",
+  "missing_policy": "complete_case_no_imputation",
+  "clinical_fields": {
+    "age_years": {"group": "risk_factors", "unit": "year", "min": 0, "max": 120},
+    "hypertension": {"group": "risk_factors", "unit": "binary", "allowed": [0, 1]},
+    "diabetes": {"group": "risk_factors", "unit": "binary", "allowed": [0, 1]},
+    "smoking": {"group": "risk_factors", "unit": "binary", "allowed": [0, 1]},
+    "rest_heart_rate_bpm": {"group": "clinical_features", "unit": "bpm", "min_exclusive": 0, "max": 300},
+    "ldl_c_mmol_l": {"group": "clinical_features", "unit": "mmol/L", "min": 0, "max": 30}
+  },
+  "feature_order": ["age_years", "hypertension", "diabetes", "smoking", "rest_heart_rate_bpm", "ldl_c_mmol_l", "pet_mfr", "mr_mpri"],
+  "perfusion_fields": {
+    "pet_mfr": {"group": "pet_perfusion", "unit": "1", "min_exclusive": 0},
+    "mr_mpri": {"group": "mr_perfusion", "unit": "1", "min_exclusive": 0}
+  },
+  "notes": [
+    "Engineering ranges are not diagnostic thresholds; the six clinical fields and units require explicit hospital confirmation.",
+    "IDs, partition flags, diagnosis labels, directory prefixes and DICOM Age/Sex are never model features.",
+    "D4 slope ratios are dimensionless; the legacy synthetic demo contract is not used."
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "schema_version": "0.1",
+  "data_origin": "synthetic",
+  "patient_id": "SYNTH-001",
+  "risk_factors": {"age_years": 58, "hypertension": 1, "diabetes": 0, "smoking": 0},
+  "clinical_features": {"rest_heart_rate_bpm": 72, "ldl_c_mmol_l": 2.7},
+  "pet_perfusion": {
+    "rest_mbf": 1.0, "stress_mbf": 1.7,
+    "provenance": {"method": "synthetic_fixture", "source_reference": "SYNTH-PET-001", "qc_status": "pass", "reviewed_by": "SYNTH-REVIEWER"}
+  },
+  "mr_perfusion": {
+    "rest_normalized_upslope": 0.5, "stress_normalized_upslope": 0.8,
+    "provenance": {"method": "synthetic_fixture", "source_reference": "SYNTH-MR-001", "qc_status": "pass", "reviewed_by": "SYNTH-REVIEWER"}
+  }
+}

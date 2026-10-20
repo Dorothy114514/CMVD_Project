@@ -1,0 +1,11 @@
+{
+  "platform": "Windows-x86_64",
+  "python_version": "3.12.15",
+  "default_runtime_root": "E:/Conda",
+  "environment_name": "cmvd",
+  "installer_filename": "Miniconda3-py312_26.9.3-0-Windows-x86_64.exe",
+  "installer_url": "https://repo.anaconda.com/miniconda/Miniconda3-py312_26.9.3-0-Windows-x86_64.exe",
+  "installer_sha256": "f5eaf8af16b31f4f556915e6ce8eb5f5e89eaa3772a5f2d7fce599cc84099518",
+  "checksum_source": "https://repo.anaconda.com/miniconda/",
+  "wheel_lock": "requirements/windows-py312.lock"
+}

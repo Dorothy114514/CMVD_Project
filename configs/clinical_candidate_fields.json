@@ -1,0 +1,51 @@
+{
+  "version": "0.1-draft",
+  "status": "candidate_fields_not_observed_patient_data",
+  "basis": "Taskbook PDF physical page 11 and user authorization on 2026-10-19",
+  "label_source": "hospital_reported_physician_diagnosis",
+  "label_values": {"0": "physician_diagnosed_negative", "1": "physician_diagnosed_positive", "empty": "undetermined"},
+  "label_definition_status": "detailed_criteria_pending",
+  "missing_value": "empty CSV cell; never automatically replace with zero",
+  "identifier": "patient_id",
+  "groups": {
+    "risk_factors": [
+      {"name": "age_years", "label_zh": "年龄", "type": "number", "unit": "year", "demo_v0_1": true},
+      {"name": "sex", "label_zh": "性别", "type": "category", "allowed": ["female", "male", "unknown"], "demo_v0_1": false},
+      {"name": "height_cm", "label_zh": "身高", "type": "number", "unit": "cm", "demo_v0_1": false},
+      {"name": "weight_kg", "label_zh": "体重", "type": "number", "unit": "kg", "demo_v0_1": false},
+      {"name": "smoking", "label_zh": "吸烟史", "type": "binary", "allowed": [0, 1], "definition": "Candidate: 0=no smoking history, 1=former or current smoking; confirm with hospital", "demo_v0_1": true},
+      {"name": "hypertension", "label_zh": "高血压病史", "type": "binary", "allowed": [0, 1], "demo_v0_1": true},
+      {"name": "diabetes", "label_zh": "糖尿病史", "type": "binary", "allowed": [0, 1], "demo_v0_1": true}
+    ],
+    "clinical_features": [
+      {"name": "rest_heart_rate_bpm", "label_zh": "静息心率", "type": "number", "unit": "bpm", "demo_v0_1": true},
+      {"name": "wbc_10e9_l", "label_zh": "白细胞计数", "type": "number", "unit": "10^9/L", "demo_v0_1": false},
+      {"name": "neutrophils_10e9_l", "label_zh": "中性粒细胞计数", "type": "number", "unit": "10^9/L", "demo_v0_1": false},
+      {"name": "rbc_10e12_l", "label_zh": "红细胞计数", "type": "number", "unit": "10^12/L", "demo_v0_1": false},
+      {"name": "hemoglobin_g_l", "label_zh": "血红蛋白", "type": "number", "unit": "g/L", "demo_v0_1": false},
+      {"name": "rdw_cv_percent", "label_zh": "红细胞分布宽度CV", "type": "number", "unit": "%", "definition": "RDW-CV only; do not mix RDW-SD in fL", "demo_v0_1": false},
+      {"name": "lymphocytes_10e9_l", "label_zh": "淋巴细胞计数", "type": "number", "unit": "10^9/L", "demo_v0_1": false},
+      {"name": "platelets_10e9_l", "label_zh": "血小板计数", "type": "number", "unit": "10^9/L", "demo_v0_1": false},
+      {"name": "fasting_glucose_mmol_l", "label_zh": "空腹血糖", "type": "number", "unit": "mmol/L", "demo_v0_1": false},
+      {"name": "total_cholesterol_mmol_l", "label_zh": "总胆固醇", "type": "number", "unit": "mmol/L", "demo_v0_1": false},
+      {"name": "triglycerides_mmol_l", "label_zh": "三酰甘油", "type": "number", "unit": "mmol/L", "demo_v0_1": false},
+      {"name": "ldl_c_mmol_l", "label_zh": "LDL-C", "type": "number", "unit": "mmol/L", "demo_v0_1": true},
+      {"name": "hdl_c_mmol_l", "label_zh": "HDL-C", "type": "number", "unit": "mmol/L", "demo_v0_1": false},
+      {"name": "total_bilirubin_umol_l", "label_zh": "总胆红素", "type": "number", "unit": "umol/L", "demo_v0_1": false},
+      {"name": "uric_acid_umol_l", "label_zh": "尿酸", "type": "number", "unit": "umol/L", "demo_v0_1": false},
+      {"name": "homocysteine_umol_l", "label_zh": "同型半胱氨酸", "type": "number", "unit": "umol/L", "demo_v0_1": false},
+      {"name": "nt_probnp_pg_ml", "label_zh": "NT-proBNP", "type": "number", "unit": "pg/mL", "demo_v0_1": false}
+    ]
+  },
+  "derived_candidates": [
+    {"name": "bmi_kg_m2", "formula": "weight_kg / (height_cm / 100)^2", "requires": ["weight_kg", "height_cm"]},
+    {"name": "platelet_lymphocyte_ratio", "formula": "platelets_10e9_l / lymphocytes_10e9_l", "requires": ["platelets_10e9_l", "lymphocytes_10e9_l"]}
+  ],
+  "notes": [
+    "Draft units must be confirmed against the hospital export before import.",
+    "Missing, unknown, negative and not-applicable are distinct; do not invent patient values.",
+    "Only demo_v0_1=true clinical fields appear in the current synthetic contract; candidate fields are not automatically used for training.",
+    "Record measurement timing and source using local controlled references, not names or original paths.",
+    "Menstrual history in the taskbook requires a clinically agreed definition before adding a field."
+  ]
+}

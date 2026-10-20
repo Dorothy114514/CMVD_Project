@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "mode": "research",
+  "inputs": {
+    "manifest": "metadata/full_case_manifest.csv",
+    "associations": "metadata/patient_associations.csv",
+    "clinical": "metadata/clinical_features.csv",
+    "labels": "metadata/diagnosis_labels.csv",
+    "perfusion": "metadata/perfusion_registry.csv",
+    "partitions": "metadata/patient_partitions.csv",
+    "missingness": "metadata/clinical_missingness.csv"
+  },
+  "policy": {
+    "reported_case_count": 80,
+    "reconciliation_reviewed": false,
+    "reconciliation_reference": null,
+    "clinical_schema_reviewed": false,
+    "clinical_schema_reference": null,
+    "label_definition_version": null,
+    "label_definition_reference": null,
+    "exclusions_reviewed": false,
+    "exclusions_reference": null,
+    "reviewer_code": null,
+    "n_splits": 3,
+    "random_seed": 20261020
+  }
+}

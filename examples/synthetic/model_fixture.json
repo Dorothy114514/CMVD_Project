@@ -1,0 +1,13 @@
+{
+  "schema_version": "0.1",
+  "model_id": "untrained-synthetic-fixture-v0.1",
+  "model_kind": "fixed_synthetic_fixture",
+  "trained": false,
+  "allowed_data_origin": "synthetic",
+  "feature_order": ["age_years", "hypertension", "diabetes", "smoking", "rest_heart_rate_bpm", "ldl_c_mmol_l", "pet_mfr", "mr_mpri"],
+  "coefficients": [0.02, 0.3, 0.2, 0.1, 0.005, 0.08, -0.4, -0.4],
+  "intercept": -0.5,
+  "threshold": 0.5,
+  "threshold_basis": "arbitrary_synthetic_display_only",
+  "notice": "Manually chosen coefficients; no model was trained. Output is a simulation, not a CMVD diagnosis or calibrated clinical probability."
+}
