@@ -13,13 +13,14 @@ import unittest
 import numpy as np
 from PySide6.QtCore import QPointF, Qt, QTimer, QEventLoop, QCoreApplication, QEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton, QMessageBox
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from cmvd_demo.desktop.data import PlaneCache, PhantomGrid, ReaderBackend, direction_label, auto_levels
 from cmvd_demo.desktop.tasks import TaskRunner
 from cmvd_demo.desktop.window import BrowserWindow
+from cmvd_demo.desktop.release_check import check_product_language
 from cmvd_demo.io import DicomReadError
 
 
@@ -47,6 +48,11 @@ def until(predicate, timeout=5000):
     APP.processEvents()
 
 
+def discard_unsaved(action):
+    """Existing regression actions deliberately discard synthetic/development edits."""
+    return QMessageBox.Discard
+
+
 def dispose_window(window):
     """Drain workers, then destroy native graphs on their owning GUI thread.
 
@@ -62,7 +68,7 @@ def dispose_window(window):
 
 class DesktopTests(unittest.TestCase):
     def setUp(self):
-        self.window = BrowserWindow()
+        self.window = BrowserWindow(unsaved_prompt=discard_unsaved)
         self.window.show()
         QTest.qWait(25)
 
@@ -79,6 +85,34 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(self.window.model_label.text(), "模型未配置")
         self.assertIsNone(self.window.current_pixels)
         self.assertFalse(self.window.time_slider.isEnabled())
+
+    def test_synthetic_demo_is_menu_only_and_opens_both_phantoms(self):
+        w = self.window
+        self.assertFalse(any("合成" in b.text() for b in w.centralWidget().findChildren(QPushButton)))
+        self.assertEqual(w.series_label.text(), "打开病例目录以开始浏览")
+        self.assertIn(w.synthetic_demo_action, w.demo_menu.actions())
+        self.assertIn(w.perfusion_demo_action, w.demo_menu.actions())
+        w.synthetic_demo_action.trigger()
+        until(lambda: w.current_pixels is not None)
+        self.assertEqual(w.grid.shape[:2], (12, 5))
+        self.assertEqual(w.current_pixels[10, 15], 250)
+        w.perfusion_demo_action.trigger()
+        until(lambda: w.current_pixels is not None and w.current_choice.key.startswith("synthetic-perfusion-"))
+        self.assertEqual(len(w.choices), 2)
+
+    def test_product_empty_state_and_all_panel_language(self):
+        w = self.window
+        check_product_language(w)
+        self.assertIs(w.viewer_stack.currentWidget(), w.empty_view)
+        self.assertTrue(w.empty_open_button.isVisible())
+        from unittest.mock import patch
+        with patch("cmvd_demo.desktop.window.QFileDialog.getExistingDirectory", return_value="") as chooser:
+            QTest.mouseClick(w.empty_open_button, Qt.LeftButton)
+            chooser.assert_called_once()
+        w.synthetic_demo_action.trigger()
+        until(lambda: w.current_pixels is not None)
+        self.assertIs(w.viewer_stack.currentWidget(), w.graphics)
+        check_product_language(w)
 
     def test_known_asymmetric_pixels_physical_aspect_and_directions(self):
         w = self.synthetic()
@@ -304,7 +338,7 @@ class DesktopTests(unittest.TestCase):
         w.play_fps.setValue(25)
         self.assertEqual(w.play_timer.interval(), 40)
 
-    def test_opening_new_case_immediately_removes_previous_pixels_and_cache(self):
+    def test_opening_new_case_hides_previous_pixels_until_index_commits(self):
         w = self.synthetic()
         started, release = Event(), Event()
         self.addCleanup(release.set)
@@ -313,13 +347,16 @@ class DesktopTests(unittest.TestCase):
             release.wait(3)
             return [], {"indexed_objects": 0, "series_count": 0, "issues": []}
         w.backend.index = slow_index
-        w.open_case("not-opened-by-test")
+        import tempfile
+        with tempfile.TemporaryDirectory() as source:
+            w.open_case(source)
+        self.assertIs(w.viewer_stack.currentWidget(),w.empty_view)
         self.assertIsNone(w.current_pixels)
-        self.assertEqual(w.cache.bytes_used, 0)
         until(started.is_set)
         release.set()
         until(lambda: not w.runner.busy)
-        self.assertIsNone(w.current_pixels)
+        self.assertIsNotNone(w.current_pixels)
+        self.assertEqual(w.last_error,'case_no_indexed_objects')
 
     def test_loading_keeps_qt_timer_responsive_and_cancel_discards_late_result(self):
         w = self.synthetic()
@@ -369,6 +406,9 @@ class DesktopTests(unittest.TestCase):
         until(lambda: bool(w.last_error))
         self.assertIsNone(w.current_pixels)
         self.assertIn("错误不代表阴性", w.qc_label.text())
+        self.assertIs(w.viewer_stack.currentWidget(), w.empty_view)
+        self.assertTrue(w.empty_description.isVisible())
+        self.assertNotIn("test_decode_failure", w.status.text())
 
     def test_close_during_load_is_nonblocking_and_reopen_has_no_old_result(self):
         w = self.synthetic()
@@ -384,7 +424,7 @@ class DesktopTests(unittest.TestCase):
         until(started.is_set)
         w.close()
         self.assertFalse(w.isVisible())
-        other = BrowserWindow()
+        other = BrowserWindow(unsaved_prompt=discard_unsaved)
         try:
             other.show()
             self.assertIsNone(other.current_pixels)

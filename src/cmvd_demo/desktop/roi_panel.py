@@ -6,14 +6,18 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import Qt,Signal
 from PySide6.QtGui import QKeySequence,QShortcut
-from PySide6.QtWidgets import QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QComboBox,QCheckBox,QFileDialog,QApplication
+from PySide6.QtWidgets import QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QCheckBox,QFileDialog,QApplication
 import pyqtgraph as pg
 
 from cmvd_demo.roi import new_document,binding_for,validate_document,document_hash,set_track,extract_curves,save_snapshot,load_document,RoiError
 from cmvd_demo.roi.model import contour_at
 from cmvd_demo.roi.history import RoiHistory
+from cmvd_demo.paths import workspace_root
 from .tasks import TaskRunner
 from .roi_editor import EditablePolyLineROI
+from .roi_drawing import RoiDrawing
+from .presentation import error_message
+from .select_box import SelectBox
 
 ROLES = {"myocardium":"心肌","blood_pool":"血池"}
 COLORS = {"myocardium":"#f6bd60","blood_pool":"#63d8eb"}
@@ -33,7 +37,7 @@ class RoiPanel(QWidget):
         self.runner.progress.connect(self._progress)
         self.runner.idle.connect(window._idle)
         self.runner.idle.connect(self.refresh_buttons)
-        self.output_root = Path(__file__).resolve().parents[3]/"outputs"/"roi"
+        self.output_root = workspace_root()/"outputs"/"roi"
         self.documents = {}
         self.document,self.grid,self.key,self.result = None,None,None,None
         self.overlays = {}
@@ -48,18 +52,47 @@ class RoiPanel(QWidget):
         self._edit_before = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8,8,8,8)
-        title = QLabel("ROI 与原始曲线")
+        title = QLabel("心肌与血池轮廓（ROI）")
+        title.setObjectName("section")
         layout.addWidget(title)
         row = QHBoxLayout()
-        self.role = QComboBox()
+        self.role = SelectBox()
+        self.role.setAccessibleName("勾画对象")
         for key,name in ROLES.items():
             self.role.addItem(name,key)
         self.role.currentIndexChanged.connect(self._role_changed)
-        self.scope = QComboBox()
+        self.scope = SelectBox()
+        self.scope.setAccessibleName("轮廓作用范围")
         self.scope.addItems(["参考轮廓","仅修正当前帧"])
         self.scope.currentIndexChanged.connect(self._scope_changed)
         row.addWidget(self.role)
         row.addWidget(self.scope)
+        layout.addLayout(row)
+        self.boundary = SelectBox()
+        self.boundary.setAccessibleName("可编辑边界")
+        for label, key in (("内外膜一起编辑", "both"), ("只编辑心外膜", "outer"), ("只编辑心内膜", "inner")):
+            self.boundary.addItem(label, key)
+        self.boundary.setToolTip("单独编辑时另一条边界锁定；移动整个轮廓仍同时移动内外膜。")
+        self.boundary.currentIndexChanged.connect(self._boundary_changed)
+        layout.addWidget(self.boundary)
+        row = QHBoxLayout()
+        self.draw_shape = SelectBox()
+        self.draw_shape.setAccessibleName("勾画方式")
+        self.draw_shape.addItem("拖出椭圆", "ellipse")
+        self.draw_shape.addItem("逐点勾画", "polygon")
+        self.draw_button = QPushButton("在图上勾画")
+        self.draw_button.setObjectName("primary")
+        self.draw_button.clicked.connect(lambda: self.drawing.start())
+        row.addWidget(self.draw_shape)
+        row.addWidget(self.draw_button)
+        layout.addLayout(row)
+        row = QHBoxLayout()
+        self.finish_draw_button = QPushButton("完成勾画（Enter）")
+        self.cancel_draw_button = QPushButton("取消勾画（Esc）")
+        self.finish_draw_button.clicked.connect(lambda: self.drawing.finish())
+        self.cancel_draw_button.clicked.connect(lambda: self.drawing.cancel())
+        row.addWidget(self.finish_draw_button)
+        row.addWidget(self.cancel_draw_button)
         layout.addLayout(row)
         row = QHBoxLayout()
         self.undo_button = QPushButton("撤销（Ctrl+Z）")
@@ -78,21 +111,23 @@ class RoiPanel(QWidget):
             shortcut.activated.connect(callback)
             self._shortcuts.append(shortcut)
         row = QHBoxLayout()
-        self.add_button = QPushButton("放置参考轮廓")
+        self.add_button = QPushButton("居中参考轮廓")
+        self.add_button.setToolTip("放置居中的几何起点；可改用“在图上勾画”直接指定位置和大小。")
         self.add_button.clicked.connect(self.add_reference)
-        self.remove_button = QPushButton("删除该ROI")
+        self.remove_button = QPushButton("删除所选轮廓")
         self.remove_button.clicked.connect(self.remove_track)
         row.addWidget(self.add_button)
         row.addWidget(self.remove_button)
         layout.addLayout(row)
-        self.hole = QCheckBox("心肌使用内膜排除轮廓")
+        self.hole = QCheckBox("排除心内膜以内区域")
+        self.hole.setToolTip("以外轮廓以内、内轮廓以外的区域计算心肌信号；请手动核对内外膜位置。")
         self.hole.setChecked(True)
         self.hole.toggled.connect(self._hole_changed)
         layout.addWidget(self.hole)
         self.reset_frame_button = QPushButton("取消本帧修正，恢复参考轮廓")
         self.reset_frame_button.clicked.connect(self.reset_frame)
         layout.addWidget(self.reset_frame_button)
-        hint = QLabel("编辑控制点：左键拖点，点击线段加点。\n移动整个ROI / 平移图像请切换上方鼠标工具；中键可平移。\n撤销/重做只恢复轮廓，曲线与复核需重做；切换病例前请保存。")
+        hint = QLabel("先选心肌或血池，再在图上拖椭圆或逐点勾画。\n逐点时Enter完成、Backspace撤一点、Esc取消；完成后可拖点细调。\n可单独锁定内外膜；滚轮缩放、中键平移。切换病例前请保存。")
         hint.setWordWrap(True)
         hint.setObjectName("muted")
         layout.addWidget(hint)
@@ -109,7 +144,16 @@ class RoiPanel(QWidget):
         row.addWidget(self.calculate_button)
         row.addWidget(self.cancel_button)
         layout.addLayout(row)
+        self.curve_controls = QHBoxLayout()
+        layout.addLayout(self.curve_controls)
+        self.curve_hint = QLabel("计算曲线后可点击定位影像，MR曲线可选择基线/首过区间。")
+        self.curve_hint.setWordWrap(True)
+        layout.addWidget(self.curve_hint)
         self.plot = pg.PlotWidget(background="#080f1b")
+        # Parentless pyqtgraph menus otherwise survive window DeferredDelete
+        # and may be finalized during a subsequent reader's Python GC.
+        for menu in (self.plot.getPlotItem().ctrlMenu, self.plot.getViewBox().menu):
+            menu.setParent(self.plot, menu.windowFlags())
         self.plot.setMinimumHeight(180)
         self.plot.setLabel("bottom","时间",units="s")
         self.plot.getAxis("bottom").enableAutoSIPrefix(False)
@@ -123,7 +167,7 @@ class RoiPanel(QWidget):
         row = QHBoxLayout()
         self.save_button = QPushButton("保存ROI / 曲线")
         self.save_button.clicked.connect(self.save)
-        self.load_button = QPushButton("重载ROI")
+        self.load_button = QPushButton("载入已存轮廓")
         self.load_button.clicked.connect(self._choose_load)
         row.addWidget(self.save_button)
         row.addWidget(self.load_button)
@@ -136,15 +180,33 @@ class RoiPanel(QWidget):
         self.qc.setWordWrap(True)
         layout.addWidget(self.qc)
         self._cursor = None
+        self.drawing = RoiDrawing(self)
         self.refresh_buttons()
 
     def _ready(self):
         w = self.window
         return (self.grid is not None and self.document is not None and w.grid is self.grid
-                and w.current_pixels is not None and w.displayed_indices==(w.time_slider.value(),w.slice_slider.value()))
+                and w.current_pixels is not None and w.displayed_indices==(w.time_slider.value(),w.slice_slider.value())
+                and not (hasattr(self,"drawing") and self.drawing.active))
 
     def refresh_buttons(self):
         ready = self._ready()
+        drawing = hasattr(self,"drawing") and self.drawing.active
+        polygon = drawing and self.drawing.mode=="polygon"
+        self.undo_button.setText("撤回一点（Ctrl+Z）" if polygon else "取消草稿（Ctrl+Z）" if drawing else "撤销（Ctrl+Z）")
+        self.window.roi_undo_button.setText("撤点" if polygon else "取消草稿" if drawing else "撤销")
+        self.draw_button.setEnabled(ready and not self.invalid_edit and not self.runner.busy)
+        self.draw_shape.setEnabled(not drawing)
+        self.boundary.setEnabled(ready and self.role.currentData()=="myocardium")
+        self.finish_draw_button.setVisible(drawing)
+        self.cancel_draw_button.setVisible(drawing)
+        self.finish_draw_button.setEnabled(drawing and len(self.drawing.points)>=3)
+        locked_reference = (ready and self.scope.currentIndex()==0 and any(
+            r['role']==self.role.currentData() and r['slice_index']==self.window.displayed_indices[1]
+            and any(o['frame_index']==self.window.displayed_indices[0] for o in r['overrides'])
+            for r in self.document['tracks']))
+        self.hole.setEnabled(ready and self.role.currentData()=="myocardium" and not locked_reference
+                             and self.window.roi_tool.currentData()!="pan")
         tracks = bool(self.document and self.document["tracks"])
         for button in (self.add_button,self.remove_button,self.reset_frame_button,self.load_button):
             button.setEnabled(ready)
@@ -154,7 +216,7 @@ class RoiPanel(QWidget):
         self.cancel_button.setEnabled(self.runner.busy)
         for check in (self.orientation_review,self.motion_review):
             check.setEnabled(ready and tracks and not self.invalid_edit)
-        self.undo_button.setEnabled(ready and (self.invalid_edit or self.history.can_undo(self.key)))
+        self.undo_button.setEnabled(drawing or (ready and (self.invalid_edit or self.history.can_undo(self.key))))
         self.redo_button.setEnabled(ready and not self.invalid_edit and self.history.can_redo(self.key))
         self.window.roi_undo_button.setEnabled(self.undo_button.isEnabled())
         self.window.roi_redo_button.setEnabled(self.redo_button.isEnabled())
@@ -178,6 +240,8 @@ class RoiPanel(QWidget):
         self.state_changed.emit()
 
     def suspend(self):
+        if hasattr(self,"drawing"):
+            self.drawing.cancel()
         self.runner.invalidate()
         self._job = None
         self._edit_before = None
@@ -191,6 +255,7 @@ class RoiPanel(QWidget):
         self.history.clear()
         self.document,self.grid,self.key = None,None,None
         self.invalid_edit = False
+        self.boundary.setCurrentIndex(0)
         self._sync_reviews()
         self.refresh_buttons()
 
@@ -215,6 +280,7 @@ class RoiPanel(QWidget):
         self._sync_reviews()
 
     def navigation_pending(self):
+        self.drawing.cancel()
         for pair in self.overlays.values():
             for item in pair:
                 if item is not None:
@@ -241,6 +307,13 @@ class RoiPanel(QWidget):
         self.refresh_buttons()
 
     def _role_changed(self):
+        self.drawing.cancel()
+        self._overlay_key = None
+        self.on_frame()
+
+    def _boundary_changed(self):
+        if hasattr(self,"drawing"):
+            self.drawing.cancel()
         self._overlay_key = None
         self.on_frame()
 
@@ -251,6 +324,7 @@ class RoiPanel(QWidget):
                 for c in self.result["curves"]))
 
     def _scope_changed(self):
+        self.drawing.cancel()
         self._overlay_key = None
         self.on_frame()
 
@@ -259,15 +333,19 @@ class RoiPanel(QWidget):
         role = self.role.currentData()
         contours = [(r["role"],contour_at(r,t)) for r in tracks]
         tool = self.window.roi_tool.currentData()
-        key = document_hash([contours,role,self.scope.currentIndex(),tool])
+        boundary_choice = self.boundary.currentData()
+        key = document_hash([contours,role,self.scope.currentIndex(),tool,boundary_choice])
         scope_editable = self.scope.currentIndex()==1 or not any(
             r["role"]==role and any(o["frame_index"]==t for o in r["overrides"]) for r in tracks)
         editable = scope_editable and tool!="pan"
+        def can_edit(kind, boundary):
+            return (kind==role and editable and (kind=="blood_pool" or tool=="contour"
+                    or boundary_choice=="both" or boundary_choice==("outer","inner")[boundary]))
         if key==self._overlay_key:
             for kind,pair in self.overlays.items():
-                for item in pair:
+                for boundary,item in enumerate(pair):
                     if item is not None:
-                        item.setEnabled(kind==role and editable)
+                        item.setEnabled(can_edit(kind,boundary))
             self.hole.setEnabled(role=="myocardium" and editable)
             if not scope_editable:
                 self.status.setText("本帧有独立轮廓；请选择“仅修正当前帧”编辑。")
@@ -310,9 +388,9 @@ class RoiPanel(QWidget):
                     item.translatable = tool=="contour" and kind==role and editable
                     item.topology_enabled = tool=="points"
                     item.setVisible(True)
-                    item.setEnabled(kind==role and editable)
+                    item.setEnabled(can_edit(kind,boundary))
                     for handle in item.getHandles():
-                        handle.setVisible(kind==role and editable and tool=="points")
+                        handle.setVisible(can_edit(kind,boundary) and tool=="points")
                     pair.append(item)
                 self.overlays[kind] = tuple(pair)
         finally:
@@ -353,6 +431,9 @@ class RoiPanel(QWidget):
         self.refresh_buttons()
 
     def undo(self):
+        if self.drawing.active:
+            self.drawing.back()
+            return
         self._restore_history(False)
 
     def redo(self):
@@ -465,7 +546,8 @@ class RoiPanel(QWidget):
         except RoiError as error:
             self.invalid_edit = True
             self.last_error = error.code
-            self.status.setText("轮廓无效，可按Ctrl+Z恢复，或修正越界/自交/内外轮廓关系："+error.code)
+            self.status.setText("轮廓无效，可按Ctrl+Z恢复，或修正越界、自交与内外轮廓关系。")
+            self.status.setToolTip("技术代码："+error.code)
             self.refresh_buttons()
 
     def add_reference(self):
@@ -589,6 +671,27 @@ class RoiPanel(QWidget):
         self.status.setText("ROI任务已取消；未发布部分曲线。")
         self.refresh_buttons()
 
+    def present_curves(self, payload):
+        if (self.document is None or payload["document_sha256"] != document_hash(self.document)
+                or self.window.displayed_indices is None or payload["slice_index"] != self.window.displayed_indices[1]):
+            raise RoiError("roi_stale_curve_result")
+        self.result = payload
+        self.plot.clear()
+        for curve in payload["curves"]:
+            self.plot.plot(curve["time_s"],curve["mean"],pen=pg.mkPen(COLORS[curve["role"]],width=2),
+                           symbol="o",symbolSize=4,name=ROLES[curve["role"]])
+        self.plot.setLabel("left","原始均值",units=payload["curves"][0]["units"])
+        self._cursor = pg.InfiniteLine(angle=90,movable=False,pen="#9aaec1")
+        self.plot.addItem(self._cursor)
+        t,z = self.window.displayed_indices
+        self._cursor.setValue(self.grid.times_s[z,t])
+        self._show_measurement(t)
+        pending = bool(payload["qc"]["warnings"])
+        self.qc.setText("原始曲线 · 未临床验证\n"+("方向/轮廓运动或分支条件待核对，禁止作为已审核特征。" if pending else "本地人工复核已记录；仍非临床定量验证。"))
+        self.status.setText("曲线完成；未平滑、未插值、未重采样。")
+        self.curve_ready.emit()
+        self.refresh_buttons()
+
     def _result(self,revision,payload):
         job = self._job
         self._job = None
@@ -597,21 +700,7 @@ class RoiPanel(QWidget):
         if job[0]=="curve":
             if self.window.displayed_indices is None or self.window.displayed_indices[1]!=job[2]:
                 return
-            self.result = payload
-            self.plot.clear()
-            for curve in payload["curves"]:
-                self.plot.plot(curve["time_s"],curve["mean"],pen=pg.mkPen(COLORS[curve["role"]],width=2),
-                               symbol="o",symbolSize=4,name=ROLES[curve["role"]])
-            self.plot.setLabel("left","原始均值",units=payload["curves"][0]["units"])
-            self._cursor = pg.InfiniteLine(angle=90,movable=False,pen="#9aaec1")
-            self.plot.addItem(self._cursor)
-            t,z = self.window.displayed_indices
-            self._cursor.setValue(self.grid.times_s[z,t])
-            self._show_measurement(t)
-            pending = bool(payload["qc"]["warnings"])
-            self.qc.setText("原始曲线 · 未临床验证\n"+("方向/轮廓运动或分支条件待核对，禁止作为已审核特征。" if pending else "本地人工复核已记录；仍非临床定量验证。"))
-            self.status.setText("曲线完成；未平滑、未插值、未重采样。")
-            self.curve_ready.emit()
+            self.present_curves(payload)
         elif job[0]=="load":
             self._replace_document(payload)
             self.window.set_roi_tool("points")
@@ -620,9 +709,7 @@ class RoiPanel(QWidget):
             self.status.setText("ROI已重载，来源/几何/时间匹配；请核对显示轮廓。")
         elif job[0]=="save":
             self.saved_output = payload
-            root = Path(__file__).resolve().parents[3]
-            target = payload.relative_to(root) if payload.is_relative_to(root) else Path(payload.name)
-            self.status.setText("已保存新快照："+str(target))
+            self.status.setText("轮廓与曲线已保存，可从“文件→打开工作目录”查看。")
             self.snapshot_saved.emit()
         self.refresh_buttons()
 
@@ -630,7 +717,8 @@ class RoiPanel(QWidget):
         self._job = None
         self.last_error = code
         self._clear_curve()
-        self.status.setText("ROI任务未完成："+code)
+        self.status.setText(error_message(code))
+        self.status.setToolTip("技术代码："+code)
         self.refresh_buttons()
 
     def _progress(self,revision,stage,done,total):

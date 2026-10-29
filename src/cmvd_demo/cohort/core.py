@@ -10,6 +10,7 @@ from cmvd_demo.roi import document_hash
 from .inputs import (CohortError, SCHEMAS, require, opaque, digest, resolve_input,
                      read_table, indexed, check_cancel)
 from .perfusion import verified_ratios
+from .protocol import population_status
 
 
 PARTITIONS = {"development", "independent_test", "excluded"}
@@ -75,7 +76,7 @@ def assemble_cohort(workspace, project, *, progress=None, cancel=None):
     All diagnostics are fixed codes; input free text is never echoed.
     """
     workspace = Path(workspace)
-    require(isinstance(project, dict) and project.get("schema_version") == 1
+    require(isinstance(project, dict) and type(project.get("schema_version")) is int and project["schema_version"] in (1, 2)
             and project.get("mode") in ("research", "synthetic_fixture"), "cohort_project_schema")
     mode = project["mode"]
     inputs, policy = project.get("inputs"), project.get("policy")
@@ -240,14 +241,17 @@ def assemble_cohort(workspace, project, *, progress=None, cancel=None):
         statuses.append({"research_id": rid, "patient_key": a.get("patient_key", "") if plan else "",
                          "partition": partition, "included": not reasons, "reasons": reasons})
     folds = make_folds(samples, policy.get("n_splits", 3), policy.get("random_seed", 20261020))
-    issues = sorted(set(issues))
+    population, population_issues, population_freezable = population_status(project, patient_plan, len(samples))
+    issues = sorted(set(issues+population_issues))
     freeze_blockers = [i for i in issues if not i.startswith(("input_missing:clinical", "input_missing:labels",
         "input_missing:perfusion", "input_missing:missingness", "policy_pending:clinical_schema", "policy_pending:label_definition"))]
-    partitions_present = {p["partition"] for p in patient_plan}
-    freeze_ready = identity_ok and not freeze_blockers and {"development", "independent_test"} <= partitions_present
+    freeze_ready = identity_ok and not freeze_blockers and population_freezable
     report = {"schema_version": 1, "kind": "cohort_audit", "mode": mode,
               "contract_id": contract["contract_id"], "contract_sha256": document_hash(contract),
               "project_sha256": document_hash(project), "input_sha256": fingerprints,
+              "population": population,
+              "label_definition_version": policy.get("label_definition_version"),
+              "label_definition_reference": policy.get("label_definition_reference"),
               "reported_case_count": policy["reported_case_count"], "manifest_case_count": len(manifest),
               "associated_patient_count": len(groups), "development_included_count": len(samples),
               "reserved_independent_patients": sum(p["partition"] == "independent_test" for p in patient_plan),

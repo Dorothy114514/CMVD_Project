@@ -1,3 +1,4 @@
+from test_desktop import discard_unsaved
 """Native Windows Qt D5 task lifecycle, stale results and cohort affordances."""
 
 from pathlib import Path
@@ -12,6 +13,7 @@ sys.path.insert(0, str(ROOT/"src"))
 from test_desktop import APP, until, dispose_window
 from PySide6.QtCore import QTimer
 from cmvd_demo.desktop.window import BrowserWindow
+from cmvd_demo.desktop.release_check import check_product_language
 from cmvd_demo.cohort.synthetic import create_synthetic_project
 
 
@@ -20,7 +22,7 @@ class CohortDesktopTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.window = BrowserWindow()
+        self.window = BrowserWindow(unsaved_prompt=discard_unsaved)
         self.window.show()
         self.window.open_cohort()
         self.dialog = self.window.cohort_dialog
@@ -57,8 +59,9 @@ class CohortDesktopTests(unittest.TestCase):
         self.dialog.freeze_button.click()
         self.wait()
         self.assertTrue((self.dialog.last_output/"partitions.json").is_file())
-        self.assertIn("已冻结", self.dialog.status.text())
+        self.assertIn("已锁定", self.dialog.status.text())
         self.assertFalse(self.dialog.audit["report"]["training_inputs_ready"])
+        check_product_language(self.window)
 
     def test_blank_forms_selected_and_opening_another_project_clears_result(self):
         self.dialog.template_button.click()

@@ -1,12 +1,15 @@
 """D2 local desktop workstation. UI never performs DICOM I/O directly."""
 
 import numpy as np
+from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QRectF, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFileDialog, QTreeWidget, QTreeWidgetItem, QSplitter, QSlider,
-    QDoubleSpinBox, QProgressBar, QHeaderView, QSpinBox,QDockWidget,QTabWidget,QScrollArea,QComboBox,
+    QDoubleSpinBox, QProgressBar, QHeaderView, QSpinBox,QDockWidget,QTabWidget,QScrollArea,
+    QStackedWidget, QMessageBox, QProgressDialog,
 )
 import pyqtgraph as pg
 
@@ -17,10 +20,26 @@ from .roi_panel import RoiPanel
 from .feature_panel import FeaturePanel
 from .roi_editor import RoiViewBox
 from .cohort_dialog import CohortDialog
+from .work_controller import WorkController
+from .curve_link import CurveLink
+from .sequence_panel import SequencePanel
+from .comparison_panel import ComparisonController
+from .research_controller import ResearchController
+from .presentation import PRODUCT_NAME, PRODUCT_SUBTITLE, PRODUCT_VERSION, WINDOW_TITLE, error_message
+from cmvd_demo.paths import workspace_root
+from .unsaved import UnsavedWork
+from .dialogs import fit_window
+from .diagnostics import record_error
+from .select_box import SelectBox
 
 STYLE = """
-QMainWindow, QWidget { background: #101b2b; color: #dae4ef; font-size: 13px; }
-QLabel#brand { color: #67dbd3; font-size: 22px; font-weight: 600; }
+QMainWindow, QWidget { background: #101b2b; color: #dae4ef; font-family: 'Microsoft YaHei UI'; font-size: 13px; }
+QLabel#brand { color: #ecf5fa; font-size: 23px; font-weight: 600; }
+QLabel#subtitle { color: #85b9c6; font-size: 13px; }
+QLabel#section { color: #c6d9e7; font-size: 14px; font-weight: 600; padding: 5px 0; }
+QLabel#empty-title { color: #ecf5fa; font-size: 21px; font-weight: 600; }
+QWidget#empty-view, QWidget#empty-view QLabel { background: #080f1b; }
+QLabel#research-badge { background: #183c43; color: #78d3cd; padding: 7px 12px; border-radius: 5px; }
 QLabel#muted { color: #9aaec1; }
 QLabel#pill { background: #253341; color: #edc58b; padding: 8px; border-radius: 5px; }
 QPushButton { background: #24384d; border: 1px solid #395168; border-radius: 5px; padding: 8px 12px; }
@@ -31,7 +50,17 @@ QTreeWidget { background: #142236; border: 1px solid #2d4157; border-radius: 5px
 QTreeWidget::item { padding: 6px 2px; }
 QTreeWidget::item:selected { background: #255367; color: #ecf5fa; }
 QHeaderView::section { background: #203248; color: #a9bdce; padding: 7px; border: 0; }
-QDoubleSpinBox { background: #172a3c; border: 1px solid #3a5167; padding: 5px; }
+QDoubleSpinBox, QSpinBox, QComboBox, QLineEdit { background: #172a3c; border: 1px solid #3a5167; padding: 6px; border-radius: 4px; }
+QPlainTextEdit { background: #111f30; border: 1px solid #2d4157; border-radius: 4px; padding: 5px; }
+QTabWidget::pane { border: 0; border-top: 1px solid #304658; }
+QTabBar::tab { background: #17283b; color: #94aebf; padding: 10px 18px; border: 0; }
+QTabBar::tab:selected { background: #203c4c; color: #8ce0d7; border-bottom: 2px solid #59c5bb; }
+QDockWidget::title { background: #162638; padding: 8px; }
+QMenuBar { background: #101b2b; padding: 3px 10px; }
+QMenuBar::item { padding: 5px 10px; }
+QMenuBar::item:selected, QMenu::item:selected { background: #255367; }
+QMenu { background: #17283b; border: 1px solid #395168; padding: 5px; }
+QMenu::item { padding: 8px 24px; }
 QSlider::groove:horizontal { height: 5px; background: #2b4056; border-radius: 2px; }
 QSlider::handle:horizontal { background: #65d3c8; width: 14px; margin: -5px 0; border-radius: 6px; }
 QProgressBar { background: #172a3c; border: 0; border-radius: 3px; text-align: center; }
@@ -43,8 +72,9 @@ class BrowserWindow(QMainWindow):
     plane_shown = Signal()
     frame_painted = Signal()
     case_indexed = Signal()
+    case_changing = Signal()
 
-    def __init__(self, backend=None):
+    def __init__(self, backend=None, *, unsaved_prompt=None):
         super().__init__()
         self.backend = backend or ReaderBackend()
         self.cache = PlaneCache()
@@ -63,6 +93,8 @@ class BrowserWindow(QMainWindow):
         self.case_revision = 0
         self._operation = None
         self._closing = False
+        self._close_approved = False
+        self._pending_index = False
         self._auto_window = True
         self._needs_fit = True
         self._render_geometry = None
@@ -88,49 +120,107 @@ class BrowserWindow(QMainWindow):
         self.cohort_dialog = CohortDialog(self)
         self.cohort_dialog.runner.idle.connect(self._idle)
         tabs = QTabWidget()
-        for title,panel in (("ROI / 曲线",self.roi_panel),("D4 灌注特征",self.feature_panel)):
+        for title,panel in (("轮廓与曲线",self.roi_panel),("灌注分析",self.feature_panel)):
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setWidget(panel)
             tabs.addTab(scroll,title)
         self.workspace_tabs = tabs
-        self.roi_dock = QDockWidget("ROI / 曲线 / 灌注特征",self)
+        self.roi_dock = QDockWidget("影像分析",self)
         self.roi_dock.setObjectName("roi-workspace")
         self.roi_dock.setWidget(tabs)
-        self.roi_dock.setMinimumWidth(340)
+        self.roi_dock.setMinimumWidth(360)
         self.addDockWidget(Qt.RightDockWidgetArea,self.roi_dock)
-        self.resizeDocks([self.roi_dock],[360],Qt.Horizontal)
-        self.menuBar().addMenu("视图").addAction(self.roi_dock.toggleViewAction())
-        demo_menu = self.menuBar().addMenu("合成演示")
-        demo_menu.addAction("方向与播放体模",self.open_synthetic)
-        demo_menu.addAction("D4首过灌注样例（完全合成）",self.open_synthetic_perfusion)
-        self.menuBar().addMenu("队列").addAction("D5队列管理", self.open_cohort)
-        demo_menu.addAction("D5队列管理与合成演示", self.open_cohort)
+        self.resizeDocks([self.roi_dock],[380],Qt.Horizontal)
+        self.file_menu = self.menuBar().addMenu("文件")
+        self.file_menu.addAction("打开病例目录…", self._choose_directory)
+        self.file_menu.addAction("打开工作目录", self.open_workspace)
+        self.view_menu = self.menuBar().addMenu("视图")
+        self.view_menu.addAction(self.roi_dock.toggleViewAction())
+        self.study_menu = self.menuBar().addMenu("研究数据")
+        self.study_menu.addAction("研究队列与患者划分", self.open_cohort)
+        self.demo_menu = self.menuBar().addMenu("合成演示")
+        self.synthetic_demo_action = self.demo_menu.addAction("影像浏览与轮廓练习（完全合成）",self.open_synthetic)
+        self.perfusion_demo_action = self.demo_menu.addAction("MR首过灌注分析（完全合成）",self.open_synthetic_perfusion)
+        self.cohort_demo_action = self.demo_menu.addAction("研究队列示例（完全合成）", self.open_cohort_demo)
+        self.help_menu = self.menuBar().addMenu("帮助")
+        self.help_menu.addAction("操作指引", self.show_usage)
+        self.help_menu.addAction("关于"+PRODUCT_NAME, self.show_about)
         self.plane_shown.connect(self.roi_panel.on_frame)
+        self.work = WorkController(self)
+        self.curve_link = CurveLink(self)
+        self.sequences = SequencePanel(self)
+        self.comparison = ComparisonController(self)
+        self.research = ResearchController(self)
+        self.unsaved = UnsavedWork(self, unsaved_prompt)
+        self._index_dialog = QProgressDialog('正在核对新病例，当前工作保留至读取成功。','取消读取',0,0,self)
+        self._index_dialog.setWindowTitle('读取病例')
+        self._index_dialog.setWindowModality(Qt.WindowModal)
+        self._index_dialog.setAutoClose(False)
+        self._index_dialog.setAutoReset(False)
+        self._index_dialog.canceled.connect(self.cancel_current)
+        # QProgressDialog owns a delayed force-show timer. hide() alone leaves
+        # it armed, including directly after construction with an infinite range.
+        self._index_dialog.reset()
+        self._index_dialog.hide()
+        fit_window(self,1380,900)
+        self.workspace_tabs.currentChanged.connect(lambda index: self.roi_panel.drawing.cancel() if index!=0 else None)
+        self.roi_dock.visibilityChanged.connect(lambda visible: self.roi_panel.drawing.cancel() if not visible else None)
 
     def open_cohort(self):
         self.cohort_dialog.show()
         self.cohort_dialog.raise_()
         self.cohort_dialog.activateWindow()
 
+    def open_cohort_demo(self):
+        self.open_cohort()
+        self.cohort_dialog.run_action("synthetic")
+
+    def show_usage(self):
+        QMessageBox.information(self, "操作指引",
+            "1. 打开单个已解压病例目录，选择影像序列。\n"
+            "2. 用时间、层面滑块浏览；滚轮缩放，中键平移。\n"
+            "3. 在“轮廓与曲线”勾画心肌、血池，计算并保存。\n"
+            "4. 在“灌注分析”核对静息/负荷与分析窗口。\n\n"
+            "练习请从“合成演示”菜单进入；保存结果可从“文件→打开工作目录”查看。")
+
+    def show_about(self):
+        QMessageBox.information(self, PRODUCT_NAME,
+            f"{PRODUCT_NAME}  {PRODUCT_VERSION}\n{PRODUCT_SUBTITLE}\n\n"
+            "用于影像浏览、轮廓勾画、灌注分析与研究队列整理。\n"
+            "研究预览版；当前尚无可用诊断模型。")
+
+    def open_workspace(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(workspace_root())))
+
     def background_runners(self):
-        return (self.runner, self.prefetch, self.roi_panel.runner, self.feature_panel.runner, self.cohort_dialog.runner)
+        runners = (self.runner, self.prefetch, self.roi_panel.runner, self.feature_panel.runner, self.cohort_dialog.runner)
+        if hasattr(self,"work"):runners+=(self.work.runner,)
+        if hasattr(self,"sequences"):runners+=(self.sequences.runner,)
+        if hasattr(self,"comparison"):runners+=tuple(p.runner for p in self.comparison.panes.values())
+        if hasattr(self,"research"):runners+=(self.research.runner,)
+        return runners
 
     def _build_ui(self):
-        self.setWindowTitle("CMVD · PET/MR 研究工作站")
+        self.setWindowTitle(WINDOW_TITLE)
         self.resize(1380, 900)
-        self.setMinimumSize(1040, 740)
+        self.setMinimumSize(760, 480)
         self.setStyleSheet(STYLE)
         central = QWidget()
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(22, 18, 22, 14)
-        layout.setSpacing(12)
+        layout.setContentsMargins(18, 14, 18, 12)
+        layout.setSpacing(10)
         header = QHBoxLayout()
-        brand = QLabel("CMVD  /  PET·MR")
+        brand = QLabel(PRODUCT_NAME)
         brand.setObjectName("brand")
         header.addWidget(brand)
-        header.addWidget(QLabel("研究影像浏览"))
+        subtitle = QLabel(PRODUCT_SUBTITLE)
+        subtitle.setObjectName("subtitle")
+        header.addWidget(subtitle)
         header.addStretch()
+        research_badge = QLabel("研究预览")
+        research_badge.setObjectName("research-badge")
+        header.addWidget(research_badge)
         self.model_label = QLabel("模型未配置")
         self.model_label.setObjectName("pill")
         header.addWidget(self.model_label)
@@ -139,12 +229,14 @@ class BrowserWindow(QMainWindow):
         self.open_button = QPushButton("打开病例目录")
         self.open_button.setObjectName("primary")
         self.open_button.clicked.connect(self._choose_directory)
-        self.synthetic_button = QPushButton("合成体模")
-        self.synthetic_button.clicked.connect(self.open_synthetic)
+        self.save_work_button = QPushButton("保存工作")
+        self.save_work_button.clicked.connect(lambda:self.work.save())
+        self.restore_work_button = QPushButton("恢复工作…")
+        self.restore_work_button.clicked.connect(lambda:self.work.choose_restore())
         self.cancel_button = QPushButton("取消任务")
         self.cancel_button.clicked.connect(self.cancel_current)
         self.cancel_button.setEnabled(False)
-        for button in (self.open_button, self.synthetic_button, self.cancel_button):
+        for button in (self.open_button, self.save_work_button, self.restore_work_button, self.cancel_button):
             toolbar.addWidget(button)
         self.case_label = QLabel("尚未加载病例")
         toolbar.addWidget(self.case_label)
@@ -152,17 +244,30 @@ class BrowserWindow(QMainWindow):
         layout.addLayout(toolbar)
         splitter = QSplitter(Qt.Horizontal)
         left = QWidget()
+        left.setMinimumWidth(300)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 10, 0)
-        left_layout.addWidget(QLabel("序列与采集候选"))
+        series_heading = QLabel("影像序列")
+        series_heading.setObjectName("section")
+        left_layout.addWidget(series_heading)
+        self.sequence_filter=SelectBox()
+        for label,key in (("全部序列","all"),("可尝试浏览","readable"),("有问题 / 提示","problems"),
+                          ("仅索引","index_only"),("未预览","pending"),("已预览","previewed")):
+            self.sequence_filter.addItem(label,key)
+        left_layout.addWidget(self.sequence_filter)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["序列", "对象数"])
+        self.tree.setHeaderLabels(["序列", "影像数", "状态"])
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.tree.currentItemChanged.connect(self._selection_changed)
         self.tree.itemActivated.connect(self._selection_changed)
         left_layout.addWidget(self.tree)
+        self.sequence_button=QPushButton("序列状态与问题清单")
+        left_layout.addWidget(self.sequence_button)
+        self.compare_button=QPushButton("静息／负荷对照查看");left_layout.addWidget(self.compare_button)
+        self.research_button=QPushButton("研究记录导出与核对");left_layout.addWidget(self.research_button)
         hint = QLabel("选择单个已解压病例目录。\n序列用途与静息/负荷均需人工核对。")
         hint.setObjectName("muted")
         hint.setWordWrap(True)
@@ -171,13 +276,14 @@ class BrowserWindow(QMainWindow):
         viewer = QWidget()
         viewer_layout = QVBoxLayout(viewer)
         viewer_layout.setContentsMargins(0, 0, 0, 0)
-        self.series_label = QLabel("打开病例或合成体模以开始")
-        self.series_label.setFont(QFont("Microsoft YaHei UI", 12))
+        self.series_label = QLabel("打开病例目录以开始浏览")
+        self.series_label.setObjectName("section")
         viewer_layout.addWidget(self.series_label)
         tools = QHBoxLayout()
         tools.addWidget(QLabel("鼠标工具"))
-        self.roi_tool = QComboBox()
-        for label,key in (("编辑ROI控制点","points"),("移动整个ROI","contour"),("平移图像","pan")):
+        self.roi_tool = SelectBox()
+        self.roi_tool.setAccessibleName("鼠标工具")
+        for label,key in (("编辑轮廓点","points"),("移动整个轮廓","contour"),("平移影像","pan")):
             self.roi_tool.addItem(label,key)
         self.roi_tool.setCurrentIndex(2)
         self.roi_tool.currentIndexChanged.connect(self._roi_tool_changed)
@@ -202,7 +308,29 @@ class BrowserWindow(QMainWindow):
         self.image.frame_painted.connect(self._painted)
         self.view.addItem(self.image)
         self.graphics.setMinimumHeight(320)
-        viewer_layout.addWidget(self.graphics, 1)
+        self.viewer_stack = QStackedWidget()
+        self.empty_view = QWidget()
+        self.empty_view.setObjectName("empty-view")
+        empty_layout = QVBoxLayout(self.empty_view)
+        empty_layout.setContentsMargins(24, 24, 24, 24)
+        empty_layout.addStretch()
+        self.empty_title = QLabel("打开病例，开始影像评阅")
+        self.empty_title.setObjectName("empty-title")
+        self.empty_description = QLabel("选择单个已解压病例目录。\n浏览PET/MR序列，勾画心肌与血池，保存曲线与分析结果。")
+        self.empty_description.setObjectName("muted")
+        for label in (self.empty_title, self.empty_description):
+            label.setWordWrap(True)
+            label.setAlignment(Qt.AlignCenter)
+            empty_layout.addWidget(label)
+        self.empty_open_button = QPushButton("打开病例目录")
+        self.empty_open_button.setObjectName("primary")
+        self.empty_open_button.clicked.connect(self._choose_directory)
+        empty_layout.addSpacing(14)
+        empty_layout.addWidget(self.empty_open_button, 0, Qt.AlignHCenter)
+        empty_layout.addStretch()
+        self.viewer_stack.addWidget(self.empty_view)
+        self.viewer_stack.addWidget(self.graphics)
+        viewer_layout.addWidget(self.viewer_stack, 1)
         self.direction = QLabel("方向：—")
         self.direction.setObjectName("muted")
         viewer_layout.addWidget(self.direction)
@@ -227,7 +355,7 @@ class BrowserWindow(QMainWindow):
         self.play_button.clicked.connect(self._toggle_play)
         self.fit_button = QPushButton("适应视图")
         self.fit_button.clicked.connect(self._fit)
-        self.auto_button = QPushButton("自动窗位")
+        self.auto_button = QPushButton("自动窗宽窗位")
         self.auto_button.clicked.connect(self.reset_levels)
         for button in (self.play_button, self.fit_button, self.auto_button):
             controls.addWidget(button)
@@ -262,10 +390,11 @@ class BrowserWindow(QMainWindow):
         self.qc_label.setWordWrap(True)
         viewer_layout.addWidget(self.qc_label)
         splitter.addWidget(viewer)
-        splitter.setSizes([345, 990])
+        splitter.setSizes([245, 900])
         layout.addWidget(splitter, 1)
         bottom = QHBoxLayout()
         self.status = QLabel("就绪 · 本地只读浏览")
+        self.status.setWordWrap(True)
         bottom.addWidget(self.status, 1)
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(260)
@@ -273,12 +402,19 @@ class BrowserWindow(QMainWindow):
         self.progress.setValue(0)
         bottom.addWidget(self.progress)
         layout.addLayout(bottom)
-        foot = QLabel("研究用途 · 当前无诊断输出  |  显示窗位不改变定量像素  |  左键按工具编辑 / 中键平移 / 滚轮缩放")
+        foot = QLabel("研究用途 · 当前无诊断输出  |  窗宽窗位仅影响显示，原始定量值保持不变")
         foot.setObjectName("muted")
         layout.addWidget(foot)
-        self.setCentralWidget(central)
+        # Keep buttons legible and all controls reachable when the screen is small.
+        central.setMinimumSize(1000,780)
+        viewport=QScrollArea()
+        viewport.setWidgetResizable(True)
+        viewport.setWidget(central)
+        self.setCentralWidget(viewport)
 
     def _roi_tool_changed(self):
+        if hasattr(self,"roi_panel"):
+            self.roi_panel.drawing.cancel()
         self.view.set_roi_tool(self.roi_tool.currentData())
         if hasattr(self,"roi_panel"):
             self.roi_panel._overlay_key = None
@@ -299,6 +435,7 @@ class BrowserWindow(QMainWindow):
 
     def _clear_image(self):
         self.image.clear()
+        self.viewer_stack.setCurrentWidget(self.empty_view)
         self.current_pixels = None
         self.displayed_indices = None
         self.cursor_label.setText("指针：—")
@@ -312,6 +449,9 @@ class BrowserWindow(QMainWindow):
         self._prefetch_context = None
 
     def _reset_case(self):
+        if self._pending_index:
+            self._finish_index()
+        self.case_changing.emit()
         self.feature_panel.reset_case()
         self.roi_panel.reset_case()
         self.runner.invalidate()
@@ -333,20 +473,65 @@ class BrowserWindow(QMainWindow):
         self.qc_label.setText("原始采集平面显示；尚未进行方向人工验收。")
         for control in (self.time_slider, self.slice_slider, self.play_button):
             control.setEnabled(False)
+        if hasattr(self,'unsaved'):
+            self.unsaved.mark_saved()
 
     def open_case(self, path):
-        self._reset_case()
-        self.case_label.setText("本地病例 · 正在索引")
+        path=Path(path)
+        if not path.is_dir():
+            self.last_error='case_directory_missing'
+            self.status.setText(error_message(self.last_error)+' 当前工作已保留。')
+            self.status.setToolTip('技术代码：'+self.last_error)
+            return
+        self.unsaved.request('打开另一病例',lambda:self._begin_index(path))
+
+    def _begin_index(self,path):
+        self._stop_play()
+        self.debounce.stop()
+        self._cancel_prefetch()
+        self.runner.invalidate()
+        self.cache.clear()
+        self.roi_panel.runner.invalidate();self.roi_panel._job=None
+        self.feature_panel.runner.invalidate();self.feature_panel._job=None
+        self.comparison.cancel()
+        self.work.cancel()
+        self.research.cancel()
+        self.last_error=''
+        self._pending_index=True
+        self._index_previous_image=(self.current_pixels,self.displayed_indices,self.viewer_stack.currentWidget())
+        self.current_pixels=self.displayed_indices=None
+        self.viewer_stack.setCurrentWidget(self.empty_view)
+        self.empty_title.setText("正在读取病例")
+        self.empty_description.setText("正在检查新病例；当前工作将在成功索引后才替换。失败或取消保留原工作。")
         self._operation = ("index",)
         self._busy("正在读取头字段…")
+        self._index_dialog.reset()
+        self._index_dialog.setRange(0,0)
+        self._index_dialog.setValue(0)
+        self._index_dialog.show()
         self.runner.submit(lambda progress, cancel: self.backend.index(path, progress, cancel))
 
+    def _finish_index(self):
+        self._pending_index=False
+        self._index_dialog.reset()
+        self._index_dialog.hide()
+        if hasattr(self,'_index_previous_image'):
+            self.current_pixels,self.displayed_indices,previous=self._index_previous_image
+            del self._index_previous_image
+            self.viewer_stack.setCurrentWidget(previous)
+
     def open_synthetic(self):
+        self.unsaved.request('切换合成演示',self._open_synthetic)
+
+    def _open_synthetic(self):
         self._reset_case()
         self.case_label.setText("完全合成 · 无患者数据")
         self._populate(synthetic_choices(), {"indexed_objects": 60, "series_count": 1, "issues": []})
 
     def open_synthetic_perfusion(self):
+        self.unsaved.request('切换合成演示',self._open_synthetic_perfusion)
+
+    def _open_synthetic_perfusion(self):
         self._reset_case()
         self._populate(perfusion_synthetic_choices(), {"indexed_objects":14,"series_count":2,"issues":[]})
 
@@ -362,9 +547,7 @@ class BrowserWindow(QMainWindow):
                 groups[group_name].setFlags(groups[group_name].flags() & ~Qt.ItemIsSelectable)
             item = QTreeWidgetItem(groups[group_name], [choice.label, str(choice.count)])
             item.setData(0, Qt.UserRole, choice)
-            if not supported:
-                item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
-            elif preferred is None or (choice.kind == "pet_dynamic" and choice.condition == "rest"):
+            if supported and (preferred is None or (choice.kind == "pet_dynamic" and choice.condition == "rest")):
                 preferred = item
         self.tree.expandAll()
         issue_count = len(summary.get("issues", []))
@@ -372,16 +555,22 @@ class BrowserWindow(QMainWindow):
         self.case_label.setText(f"{'合成体模' if synthetic else '本地病例'} · "
                                 f"{summary['series_count']} 序列 / {summary['indexed_objects']} 对象 / {issue_count} 问题")
         self.status.setText("索引结束" if not issue_count else f"索引有 {issue_count} 个问题；当前列表只含成功索引对象")
+        self.sequences.populate(choices,summary)
         if preferred is not None:
             self.tree.setCurrentItem(preferred)
+        else:
+            self.empty_title.setText("暂无可预览序列")
+            self.empty_description.setText("请检查左侧序列类型。仅索引的影像暂不支持显示，可用独立查看器核对。")
         self.case_indexed.emit()
 
     def _selection_changed(self, item, previous):
         if item is None:
             return
         choice = item.data(0, Qt.UserRole)
-        if choice is None or (choice.kind not in SUPPORTED and choice.kind != "synthetic"):
+        if choice is None:
             return
+        if self._operation is not None:
+            self.sequences.cancelled()
         self.debounce.stop()
         self._stop_play()
         self._cancel_prefetch()
@@ -389,16 +578,29 @@ class BrowserWindow(QMainWindow):
         self.current_choice, self.grid = choice, None
         self.last_error = ""
         self._clear_image()
+        self.empty_title.setText("正在准备影像")
+        self.empty_description.setText("正在核对序列的空间与时间信息。")
         self.series_label.setText(f"{choice.label}  /  {CONDITIONS[choice.condition]}")
         self.metadata.setText("正在检查空间与时间网格…")
         self.direction.setText("方向：—")
+        self.time_label.setText("时间/相位：—")
+        self.slice_label.setText("层面：—")
         for slider in (self.time_slider, self.slice_slider):
             slider.setEnabled(False)
         self.play_button.setEnabled(False)
+        if choice.kind not in SUPPORTED and choice.kind!='synthetic':
+            self.runner.invalidate();self._operation=None
+            self.empty_title.setText("此序列目前仅索引")
+            self.empty_description.setText("此类影像暂不支持显示，可用独立查看器核对。\n仅索引不代表源文件损坏；详情见“序列状态与问题清单”。")
+            self.metadata.setText(KINDS.get(choice.kind,"其他对象")+" · "+str(choice.count)+"个对象")
+            self.status.setText("仅索引 · 尚未尝试像素显示，未进行完整性或临床审核")
+            self.sequences.refresh()
+            return
         self._operation = ("grid", choice.key)
         self._auto_window = True
         self._needs_fit = True
         self._busy("正在组装几何/时间轴…")
+        self.sequences.begin(choice.key,'grid')
         self.runner.submit(lambda progress, cancel: self.backend.grid(choice, progress, cancel))
 
     def select_choice(self, key):
@@ -416,6 +618,7 @@ class BrowserWindow(QMainWindow):
         raise KeyError("choice_not_found")
 
     def _busy(self, message):
+        self.status.setToolTip("")
         self.status.setText(message)
         self.progress.setRange(0, 0)
         self.cancel_button.setEnabled(True)
@@ -426,50 +629,64 @@ class BrowserWindow(QMainWindow):
         operation = self._operation
         self._operation = None
         if operation[0] == "index":
+            if not payload[0]:
+                self._failed(revision,'case_no_indexed_objects')
+                return
+            self._finish_index()
+            self._reset_case()
             self._populate(*payload)
         elif operation[0] == "grid":
-            self.grid = payload
-            self.roi_panel.set_grid(payload,self.current_choice.key)
-            for slider, maximum in ((self.time_slider, payload.shape[0]-1), (self.slice_slider, payload.shape[1]-1)):
-                slider.blockSignals(True)
-                slider.setRange(0, maximum)
-                slider.setValue(0)
-                slider.blockSignals(False)
-                slider.setEnabled(maximum > 0)
-            self.play_button.setEnabled(payload.shape[0] > 1)
+            self._accept_grid(payload)
             self._request_plane()
         elif operation[0] == "plane":
             _, key, t, z = operation
-            self.cache.put(key, payload)
-            self.current_pixels = payload
-            self.displayed_indices = (t, z)
-            self.last_error = ""
-            self.image.new_frame()
-            self.image.setImage(payload, autoLevels=False)
-            dy, dx = self.grid.pixel_spacing_mm
-            rows, columns = payload.shape
-            geometry = (rows, columns, dy, dx)
-            if geometry != self._render_geometry:
-                self.image.setRect(QRectF(-dx/2, -dy/2, columns*dx, rows*dy))
-                self._render_geometry = geometry
-            photometric = getattr(self.grid, "photometric", None)
-            if photometric is None:
-                photometric = self.grid.cells[t][z].photometric
-            if photometric != self._render_photometric:
-                self.image.setLookupTable(self._luts[photometric])
-                self._render_photometric = photometric
-            if self._auto_window:
-                self._set_levels(*auto_levels(payload))
-                self._auto_window = False
-            else:
-                self._apply_levels()
-            if self._needs_fit:
-                self._fit()
-                self._needs_fit = False
-            self._describe(t, z)
-            self.status.setText("影像已显示 · 定量值保持原单位")
-            self.plane_shown.emit()
-            self._start_prefetch(t, z)
+            self._accept_plane(payload, t, z)
+
+    def _accept_grid(self, payload):
+        self.grid = payload
+        self.sequences.grid_ok(payload)
+        self.roi_panel.set_grid(payload,self.current_choice.key)
+        for slider, maximum in ((self.time_slider, payload.shape[0]-1), (self.slice_slider, payload.shape[1]-1)):
+            slider.blockSignals(True)
+            slider.setRange(0, maximum)
+            slider.setValue(0)
+            slider.blockSignals(False)
+            slider.setEnabled(maximum > 0)
+        self.play_button.setEnabled(payload.shape[0] > 1)
+
+    def _accept_plane(self, payload, t, z):
+        key = (self.case_revision, self.current_choice.key, t, z)
+        self.cache.put(key, payload)
+        self.current_pixels = payload
+        self.displayed_indices = (t, z)
+        self.last_error = ""
+        self.image.new_frame()
+        self.viewer_stack.setCurrentWidget(self.graphics)
+        self.image.setImage(payload, autoLevels=False)
+        dy, dx = self.grid.pixel_spacing_mm
+        rows, columns = payload.shape
+        geometry = (rows, columns, dy, dx)
+        if geometry != self._render_geometry:
+            self.image.setRect(QRectF(-dx/2, -dy/2, columns*dx, rows*dy))
+            self._render_geometry = geometry
+        photometric = getattr(self.grid, "photometric", None)
+        if photometric is None:
+            photometric = self.grid.cells[t][z].photometric
+        if photometric != self._render_photometric:
+            self.image.setLookupTable(self._luts[photometric])
+            self._render_photometric = photometric
+        if self._auto_window:
+            self._set_levels(*auto_levels(payload))
+            self._auto_window = False
+        else:
+            self._apply_levels()
+        if self._needs_fit:
+            self._fit()
+            self._needs_fit = False
+        self._describe(t, z)
+        self.status.setText("影像已显示 · 定量值保持原单位")
+        self.plane_shown.emit()
+        self._start_prefetch(t, z)
 
     def _position_changed(self):
         if self.grid is not None:
@@ -506,6 +723,7 @@ class BrowserWindow(QMainWindow):
         cached = self.cache.get(key)
         self._cancel_prefetch()
         self._operation = ("plane", key, t, z)
+        self.sequences.begin(self.current_choice.key,'pixels',[t,z])
         self._busy(self._pending_message())
         self.runner.submit(lambda progress, cancel: self.backend.plane(grid, t, z, cached, progress, cancel))
 
@@ -652,14 +870,28 @@ class BrowserWindow(QMainWindow):
         self.status.setText(f"{names.get(stage, '读取')} {done}" + (f"/{total}" if total else ""))
 
     def _failed(self, revision, code):
+        if self._pending_index:
+            self._operation=None
+            self._finish_index()
+            self.last_error=code
+            self.status.setText(error_message(code)+' 当前工作已保留。')
+            self.status.setToolTip('技术代码：'+code)
+            self.progress.setRange(0,1)
+            self.cancel_button.setEnabled(False)
+            return
         self.last_error = code
+        self.sequences.failure(self._operation,code)
         if self._operation and self._operation[0] == "index":
             self.case_label.setText("本地病例 · 索引未完成")
         self._operation = None
         self._clear_image()
         self._cancel_prefetch()
         self._stop_play()
-        self.status.setText(f"读取未完成 · {code} · 双击序列重试或打开病例")
+        message = error_message(code)
+        self.empty_title.setText("此序列暂未能显示")
+        self.empty_description.setText(message+"\n可双击序列重试，或选择其他序列。")
+        self.status.setText(message)
+        self.status.setToolTip("技术代码："+code)
         self.qc_label.setText("当前无有效影像；不会输出诊断。错误不代表阴性。")
 
     def _idle(self):
@@ -672,6 +904,17 @@ class BrowserWindow(QMainWindow):
             QTimer.singleShot(0, self.close)
 
     def cancel_current(self):
+        if self._pending_index:
+            self.runner.invalidate()
+            self._operation=None
+            self._finish_index()
+            self.status.setText('新病例读取已取消，当前工作已保留。')
+            self.cancel_button.setEnabled(False)
+            return
+        if hasattr(self,"work") and self.work.busy:
+            self.work.cancel()
+            return
+        self.sequences.cancelled()
         self.runner.invalidate()
         self._cancel_prefetch()
         self.debounce.stop()
@@ -684,11 +927,24 @@ class BrowserWindow(QMainWindow):
         self.progress.setValue(0)
         self.cancel_button.setEnabled(False)
         self.status.setText("已取消 · 双击序列重试或打开病例")
+        self.empty_title.setText("已取消影像加载")
+        self.empty_description.setText("可双击左侧序列重新加载，或打开其他病例。")
         if self.grid is None:
             self.metadata.setText("加载未完成")
 
     def closeEvent(self, event):
+        if self._pending_index:
+            self.cancel_current()
+        if not self._closing and not self._close_approved and self.unsaved.dirty():
+            event.ignore()
+            self.unsaved.request('退出工作站',self._approve_close)
+            return
         self._closing = True
+        self.comparison.cancel()
+        self.research.cancel();self.research.dialog.hide()
+        self.sequences.cancel()
+        self.sequences.dialog.hide()
+        self.work.cancel()
         self.cohort_dialog.cancel()
         self.cohort_dialog.hide()
         self.debounce.stop()
@@ -703,3 +959,7 @@ class BrowserWindow(QMainWindow):
             event.ignore()
         else:
             event.accept()
+
+    def _approve_close(self):
+        self._close_approved=True
+        QTimer.singleShot(0,self.close)

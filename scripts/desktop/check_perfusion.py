@@ -13,7 +13,7 @@ import uuid
 
 import numpy as np
 from PySide6.QtCore import QCoreApplication, QEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QMessageBox, QApplication
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/"src"))
@@ -170,7 +170,7 @@ def main():
     app = QApplication([sys.argv[0]])
     app.setQuitOnLastWindowClosed(False)
     app.setStyle("Fusion")
-    window = BrowserWindow()
+    window = BrowserWindow(unsaved_prompt=lambda action: QMessageBox.Discard)
     window.show()
     report["qt_platform"] = app.platformName()
     try:

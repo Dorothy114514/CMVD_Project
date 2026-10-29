@@ -17,7 +17,7 @@ import pydicom
 from PySide6.QtCore import Qt, QTimer, QEventLoop,QPointF,QCoreApplication,QEvent
 from PySide6.QtGui import QPainterPath,QPolygonF
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QMessageBox, QApplication
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
@@ -219,9 +219,9 @@ def exercise_case(window, alias, path, navigation=False,roi_output=None):
     timer.timeout.connect(lambda: ticks.append(time.monotonic()))
     timer.start()
     window.open_case(path)
-    assert window.current_pixels is None and window.cache.bytes_used == 0
+    assert window._pending_index and window.viewer_stack.currentWidget() is window.empty_view
     try:
-        wait_for(lambda: window.current_pixels is not None or bool(window.last_error))
+        wait_for(lambda: (not window._pending_index and window.current_pixels is not None) or bool(window.last_error))
     finally:
         timer.stop()
     if window.last_error:
@@ -287,7 +287,7 @@ def main():
     app = QApplication([sys.argv[0]])
     app.setQuitOnLastWindowClosed(False)
     app.setStyle("Fusion")
-    window = BrowserWindow()
+    window = BrowserWindow(unsaved_prompt=lambda action: QMessageBox.Discard)
     window.runner.progress.connect(lambda revision, stage, done, total: print(f"UI {stage} {done}/{total}", flush=True))
     window.show()
     report = {"stage": "D3" if args.roi else "D2", "qt_platform": app.platformName(), "automated_native_interaction": True,

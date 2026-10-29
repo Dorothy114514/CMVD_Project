@@ -5,19 +5,24 @@ from pathlib import Path
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
-                              QPushButton, QComboBox, QLineEdit, QSpinBox, QCheckBox,
-                              QPlainTextEdit, QFileDialog)
+                              QPushButton, QLineEdit, QSpinBox, QCheckBox,
+                              QPlainTextEdit, QFileDialog, QGroupBox)
 
 from cmvd_demo.io import ReadCancelled
 from cmvd_demo.roi import document_hash
+from cmvd_demo.paths import workspace_root
 from cmvd_demo.perfusion import (FeatureError, mr_features, pair_mr, pet_request, import_pet,
                                 compare_reference, build_bundle, case_token_for_choices,
                                 load_json, save_features, save_request)
 from .tasks import TaskRunner
+from .presentation import error_message, unit_label
+from .curve_link import linked_plot
+from .select_box import SelectBox
 
 
 class FeaturePanel(QWidget):
     task_done = Signal()
+    parameters_changed = Signal()
 
     def __init__(self, window):
         super().__init__(window)
@@ -27,22 +32,37 @@ class FeaturePanel(QWidget):
         self.runner.failed.connect(self._failed)
         self.runner.idle.connect(self.refresh_buttons)
         self.runner.idle.connect(window._idle)
-        self.output_root = Path(__file__).resolve().parents[3]/"outputs"/"features"
+        self.output_root = workspace_root()/"outputs"/"features"
         self.mr_slots, self.pet_slots = {}, {}
         self.candidate = self.pet = self.mr_reference = self.saved_output = None
         self.last_error = ""
+        self.single_saved_output = None
         self._job = None
         self._candidate_context = None
         layout = QVBoxLayout(self)
-        notice = QLabel("D4 · 探索性灌注特征，未临床验证\n先在ROI页计算双ROI原始曲线；采集状态需手动确认。")
+        notice = QLabel("灌注分析 · 研究预览\n先在“轮廓与曲线”计算心肌、血池曲线，再核对采集状态与分析窗口。")
         notice.setWordWrap(True)
         layout.addWidget(notice)
-        form = QFormLayout()
-        self.condition = QComboBox()
+        self.curve_controls = QHBoxLayout()
+        layout.addLayout(self.curve_controls)
+        self.curve_plot = linked_plot(self)
+        layout.addWidget(self.curve_plot)
+        self.curve_position = QLabel("当前曲线：—")
+        self.curve_position.setWordWrap(True)
+        layout.addWidget(self.curve_position)
+        self.curve_hint = QLabel("先计算原始曲线，再选择基线与首过区间。")
+        self.curve_hint.setWordWrap(True)
+        layout.addWidget(self.curve_hint)
+        parameters = QGroupBox("采集信息与分析窗口")
+        form = QFormLayout(parameters)
+        self.condition = SelectBox()
+        self.condition.setAccessibleName("已核对的采集状态")
         self.condition.addItem("请选择已核对状态", None)
+        self.condition.setToolTip("核对采集协议后再选择静息或负荷；待核对状态不能用于计算分析。")
         self.condition.addItem("静息", "rest")
         self.condition.addItem("负荷", "stress")
         self.protocol = QLineEdit()
+        self.protocol.setMaxLength(80)
         self.protocol.setPlaceholderText("协议代码（无患者身份信息）")
         self.baseline_start,self.baseline, self.start, self.end = QSpinBox(),QSpinBox(), QSpinBox(), QSpinBox()
         for spin, value in ((self.baseline_start,1),(self.baseline, 3), (self.start, 4), (self.end, 20)):
@@ -54,17 +74,25 @@ class FeaturePanel(QWidget):
         form.addRow("基线帧数", self.baseline)
         form.addRow("首过起始帧（从1计）", self.start)
         form.addRow("首过结束帧（含）", self.end)
-        layout.addLayout(form)
+        layout.addWidget(parameters)
         self.window_review = QCheckBox("已按曲线核对基线与首过窗口")
         layout.addWidget(self.window_review)
-        self.mr_button = QPushButton("计算当前MR平面特征")
+        mr_heading = QLabel("MR 心肌灌注")
+        mr_heading.setObjectName("section")
+        layout.addWidget(mr_heading)
+        self.mr_button = QPushButton("计算当前MR平面")
         self.mr_button.clicked.connect(self.calculate_mr)
-        self.capture_mr_button = QPushButton("保留当前MR结果至所选状态")
+        self.capture_mr_button = QPushButton("保留MR结果至静息 / 负荷")
         self.capture_mr_button.clicked.connect(self.capture_mr)
-        self.capture_pet_button = QPushButton("保留当前PET双ROI曲线至所选状态")
+        self.capture_pet_button = QPushButton("保留PET曲线至静息 / 负荷")
         self.capture_pet_button.clicked.connect(self.capture_pet)
-        for button in (self.mr_button, self.capture_mr_button, self.capture_pet_button):
+        for button in (self.mr_button, self.capture_mr_button):
             layout.addWidget(button)
+        self.single_save_button = QPushButton("保存当前MR分析")
+        self.single_save_button.setToolTip("独立保存当前单状态MR结果、轮廓和曲线，不需要静息/负荷配对。")
+        self.single_save_button.clicked.connect(lambda:self.window.work.save(single=True))
+        self.single_save_button.setEnabled(False)
+        layout.addWidget(self.single_save_button)
         self.summary = QPlainTextEdit()
         self.summary.setReadOnly(True)
         self.summary.setMinimumHeight(110)
@@ -77,10 +105,14 @@ class FeaturePanel(QWidget):
         self.protocol_review = QCheckBox("已确认MR剂量、序列及协议可比较")
         layout.addWidget(self.pair_review)
         layout.addWidget(self.protocol_review)
+        pet_heading = QLabel("PET 工作站结果")
+        pet_heading.setObjectName("section")
+        layout.addWidget(pet_heading)
+        layout.addWidget(self.capture_pet_button)
         row = QHBoxLayout()
-        self.request_button = QPushButton("导出PET填写模板")
+        self.request_button = QPushButton("导出PET结果模板")
         self.request_button.clicked.connect(self.export_request)
-        self.import_button = QPushButton("导入PET工作站JSON")
+        self.import_button = QPushButton("导入PET工作站结果")
         self.import_button.clicked.connect(self.choose_pet)
         row.addWidget(self.request_button)
         row.addWidget(self.import_button)
@@ -88,13 +120,13 @@ class FeaturePanel(QWidget):
         row = QHBoxLayout()
         self.reference_template_button = QPushButton("导出MR参考模板")
         self.reference_template_button.clicked.connect(self.export_reference_request)
-        self.reference_button = QPushButton("核对MR参考JSON")
+        self.reference_button = QPushButton("核对MR参考结果")
         self.reference_button.clicked.connect(self.choose_reference)
         row.addWidget(self.reference_template_button)
         row.addWidget(self.reference_button)
         layout.addLayout(row)
         row = QHBoxLayout()
-        self.save_button = QPushButton("保存特征 / QC快照")
+        self.save_button = QPushButton("保存分析与质控结果")
         self.save_button.clicked.connect(self.save)
         self.cancel_button = QPushButton("取消特征任务")
         self.cancel_button.clicked.connect(self.cancel)
@@ -104,11 +136,11 @@ class FeaturePanel(QWidget):
         self.status = QLabel("每次只配对一个MR平面；不会自动平均不同平面。\n无PET结果或MR参考时仍可保存预览，缺项明确标记。")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
-        for control in (self.condition,self.baseline_start, self.baseline, self.start, self.end):
-            signal = control.currentIndexChanged if control is self.condition else control.valueChanged
-            signal.connect(self.invalidate_candidate)
-        self.protocol.textChanged.connect(self.invalidate_candidate)
-        self.window_review.toggled.connect(self.invalidate_candidate)
+        for control in (self.baseline_start, self.baseline, self.start, self.end):
+            control.valueChanged.connect(self.window_parameters_changed)
+        self.condition.currentIndexChanged.connect(self.analysis_settings_changed)
+        self.protocol.textChanged.connect(self.analysis_settings_changed)
+        self.window_review.toggled.connect(self.analysis_settings_changed)
         self.pair_review.toggled.connect(self._pair_changed)
         self.protocol_review.toggled.connect(self._pair_changed)
         window.roi_panel.state_changed.connect(self.context_changed)
@@ -129,6 +161,28 @@ class FeaturePanel(QWidget):
         self.summary.clear()
         self.refresh_buttons()
 
+    def window_parameters_changed(self, *args):
+        self.window._stop_play()
+        previous = self.window_review.blockSignals(True)
+        self.window_review.setChecked(False)
+        self.window_review.blockSignals(previous)
+        self.analysis_settings_changed()
+
+    def analysis_settings_changed(self, *args):
+        p = self.window.roi_panel
+        z = self.window.displayed_indices[1] if self.window.displayed_indices else None
+        removed = [c for c,slot in self.mr_slots.items() if slot['key']==p.key and slot['feature']['slice_index']==z]
+        for condition in removed:
+            del self.mr_slots[condition]
+        if removed:
+            self.mr_reference = None
+            self.pair_review.setChecked(False)
+            self.protocol_review.setChecked(False)
+            self._update_pair_summary()
+        self.single_saved_output = self.saved_output = None
+        self.invalidate_candidate()
+        self.parameters_changed.emit()
+
     def _pair_changed(self, *args):
         self.mr_reference = None
         self.runner.invalidate()
@@ -137,6 +191,7 @@ class FeaturePanel(QWidget):
         self.refresh_buttons()
 
     def reset_case(self):
+        self.single_saved_output = None
         self.invalidate_candidate()
         self.mr_slots.clear()
         self.pet_slots.clear()
@@ -172,13 +227,19 @@ class FeaturePanel(QWidget):
         if not p.result:
             self.runner.invalidate()
             self._job = None
+            if self.candidate is not None:
+                self.invalidate_candidate()
+            blocked = self.window_review.blockSignals(True)
+            self.window_review.setChecked(False)
+            self.window_review.blockSignals(blocked)
         self.refresh_buttons()
 
     def refresh_buttons(self):
         p = self.window.roi_panel
         ready = p.result is not None and p._ready() and not p.invalid_edit and not self.runner.busy
         selected = self.condition.currentData() is not None
-        self.mr_button.setEnabled(ready and selected and p.grid.kind == "mr_perfusion")
+        valid = not hasattr(self.window,'curve_link') or self.window.curve_link.valid_window()
+        self.mr_button.setEnabled(ready and selected and p.grid.kind == "mr_perfusion" and valid)
         self.capture_pet_button.setEnabled(ready and selected and p.grid.kind == "pet_dynamic")
         self.capture_mr_button.setEnabled(self.candidate is not None and not self.runner.busy)
         for button in (self.request_button, self.import_button):
@@ -187,6 +248,9 @@ class FeaturePanel(QWidget):
             button.setEnabled(len(self.mr_slots) == 2 and not self.runner.busy)
         self.save_button.setEnabled((len(self.mr_slots) == 2 or self.pet is not None) and not self.runner.busy)
         self.cancel_button.setEnabled(self.runner.busy)
+        if hasattr(self.window,"work"):
+            self.window.work.refresh()
+        if hasattr(self.window,'comparison'):self.window.comparison.refresh()
 
     def _record(self):
         p = self.window.roi_panel
@@ -226,7 +290,7 @@ class FeaturePanel(QWidget):
         self.mr_reference = None
         self.pair_review.setChecked(False)
         self.protocol_review.setChecked(False)
-        self.status.setText("MR已保留："+", ".join(self.mr_slots)+"；配对审核需重新确认。")
+        self.status.setText("MR已保留："+"、".join("静息" if c == "rest" else "负荷" for c in self.mr_slots)+"；配对审核需重新确认。")
         self._update_pair_summary()
         self.refresh_buttons()
 
@@ -240,7 +304,7 @@ class FeaturePanel(QWidget):
                 raise FeatureError("feature_wrong_branch")
             self.pet_slots[condition] = record
             self.pet = None
-            self.status.setText("PET本地曲线已保留："+", ".join(self.pet_slots)+"；工作站结果需另行导入。")
+            self.status.setText("PET本地曲线已保留："+"、".join("静息" if c == "rest" else "负荷" for c in self.pet_slots)+"；工作站结果需另行导入。")
             self.refresh_buttons()
         except FeatureError as error:
             self._failed(0, error.code)
@@ -256,17 +320,19 @@ class FeaturePanel(QWidget):
                        protocol_comparable=self.protocol_review.isChecked())
 
     def _update_pair_summary(self):
+        self.pair_summary.setToolTip("")
         if len(self.mr_slots) != 2:
             self.pair_summary.setText(f"MR：已保留{len(self.mr_slots)}/2个状态，尚未配对。")
             return
         try:
             pair = self._mr_pair()
             ratio = pair["measurements"]["mr_mpri"]["value"]
-            self.pair_summary.setText(f"MR MPRI（半定量）: {ratio:.6g}\n"+
+            self.pair_summary.setText(f"MR灌注储备指数（MPRI，半定量）: {ratio:.6g}\n"+
                                      ("预览结果，配对/分支质控待完成；非绝对MBF。" if pair["qc"]["warnings"]
                                       else "本地配对检查通过；参考与临床验证另记。"))
         except FeatureError as error:
-            self.pair_summary.setText("MR暂不能配对："+error.code)
+            self.pair_summary.setText("MR暂不能配对："+error_message(error.code))
+            self.pair_summary.setToolTip("技术代码："+error.code)
 
     def export_request(self):
         try:
@@ -280,7 +346,7 @@ class FeaturePanel(QWidget):
             self._failed(0, error.code)
 
     def choose_pet(self):
-        path, _ = QFileDialog.getOpenFileName(self, "导入已审核PET工作站JSON", str(self.output_root), "JSON (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "选择已审核PET工作站结果", str(self.output_root), "工作站结果 (*.json)")
         if path:
             self.load_pet(path)
 
@@ -306,7 +372,7 @@ class FeaturePanel(QWidget):
             self._failed(0, error.code)
 
     def choose_reference(self):
-        path, _ = QFileDialog.getOpenFileName(self, "核对已审核MR参考JSON", str(self.output_root), "JSON (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "选择已审核MR参考结果", str(self.output_root), "分析结果 (*.json)")
         if path:
             self.load_reference(path)
 
@@ -357,39 +423,48 @@ class FeaturePanel(QWidget):
         self.status.setText("特征任务已取消；未发布部分结果。")
         self.refresh_buttons()
 
+    def present_mr(self, value):
+        keys = (("心肌峰值增强","myocardium.peak_enhancement"),
+                ("心肌达峰时间（相对窗口起点）","myocardium.ttp_from_window_origin"),
+                ("心肌最大上升斜率","myocardium.max_upslope"),("心肌/血池斜率比","normalized_upslope"))
+        self.summary.setPlainText("\n".join(f"{label}: {value['measurements'][k]['value']:.6g} {unit_label(value['measurements'][k]['unit'])}"
+                                           for label,k in keys))
+        warnings = value["qc"]["warnings"]
+        self.status.setText("MR预览完成；"+(f"有{len(warnings)}项质控待核对，不能作为已审核输入。" if warnings
+                                           else "本地检查通过，参考未验证。"))
+
+    def present_pet(self, value):
+        names = {"rest_mbf":"静息心肌血流量（MBF）","stress_mbf":"负荷心肌血流量（MBF）","pet_mfr":"PET心肌血流储备（MFR）"}
+        self.summary.setPlainText("\n".join(f"{names[k]}: {v['value']:.6g} {v['unit']}" for k, v in value["measurements"].items()))
+        pending = len(value["qc"]["warnings"])
+        self.status.setText("PET结果与本地曲线来源一致；MBF算法仍需独立验证。"+
+                            (f"另有{pending}项质控待核对。" if pending else ""))
+
     def _result(self, revision, value):
         job, self._job = self._job, None
         if job is None or job[1] != self._context():
             return
+        self.status.setToolTip("")
         if job[0] == "mr":
             self.candidate = value
             self._candidate_context = self._context()
-            keys = (("心肌峰值增强","myocardium.peak_enhancement"),
-                    ("心肌达峰时间（相对窗口起点）","myocardium.ttp_from_window_origin"),
-                    ("心肌最大上升斜率","myocardium.max_upslope"),("心肌/血池斜率比","normalized_upslope"))
-            self.summary.setPlainText("\n".join(f"{label}: {value['measurements'][k]['value']:.6g} {value['measurements'][k]['unit']}"
-                                               for label,k in keys))
-            warnings = value["qc"]["warnings"]
-            self.status.setText("MR预览完成；"+(f"有{len(warnings)}项质控待核对，不能作为已审核输入。" if warnings
-                                               else "本地检查通过，参考未验证。"))
+            self.present_mr(value)
         elif job[0] == "pet":
             self.pet = value
-            names = {"rest_mbf":"静息MBF","stress_mbf":"负荷MBF","pet_mfr":"PET MFR"}
-            self.summary.setPlainText("\n".join(f"{names[k]}: {v['value']:.6g} {v['unit']}" for k, v in value["measurements"].items()))
-            self.status.setText("PET导入与TAC来源绑定通过；未独立验证MBF算法。"+
-                                ", ".join(value["qc"]["warnings"]))
+            self.present_pet(value)
         elif job[0] == "reference":
             ref, check = value
             self.mr_reference = ref
             self.status.setText("MR参考工程容差比较："+("通过" if check["passed"] else "失败，禁止作为已核对输入"))
         elif job[0] == "saved":
             self.saved_output = value
-            self.status.setText("新快照已保存："+value.name+"；详见outputs/features。")
+            self.status.setText("分析结果已保存，可从“文件→打开工作目录”查看。")
         self.refresh_buttons()
         self.task_done.emit()
 
     def _failed(self, revision, code):
         self._job = None
         self.last_error = code
-        self.status.setText("特征任务未完成："+code+"；错误不会作为阴性或零值。")
+        self.status.setText(error_message(code)+" 未完成结果不会作为阴性或零值。")
+        self.status.setToolTip("技术代码："+code)
         self.refresh_buttons()

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "tools": {
+    "7zr": {
+      "version": "26.04",
+      "platform": "Windows x86 executable, also runs on Windows x64",
+      "source_page": "https://www.7-zip.org/download.html",
+      "download_url": "https://github.com/ip7z/7zip/releases/download/26.04/7zr.exe",
+      "sha256": "256feca8e274e5da655e2a284fabafd9f554365eb164862089dacd4e8276d282",
+      "bytes": 602624,
+      "default_local_path": "E:/Conda/tools/7zip/26.04/7zr.exe",
+      "installation": "portable, no PATH or registry changes",
+      "authenticode_at_acquisition": "NotSigned",
+      "verification": "official HTTPS release, SHA-256 pinned locally, version banner 26.04; no Authenticode publisher claim"
+    },
+    "py-spy": {
+      "version": "0.4.2",
+      "platform": "Windows x64",
+      "source_page": "https://pypi.org/pypi/py-spy/json",
+      "download_url": "https://files.pythonhosted.org/packages/6f/ed/1409cdb557e558a6c98003ab12fdd4284699e158c167c187cb0f124eea4c/py_spy-0.4.2-py2.py3-none-win_amd64.whl",
+      "wheel_sha256": "8b06a353c177677e4e1701b288d8c58e2f8d4208ee81a8048d9f72ba800918f8",
+      "sha256": "6e83ab095f40453742d01a2719a178f308534015da519ec0659d2584139dc995",
+      "default_local_path": "E:/Conda/tools/py-spy/0.4.2/py-spy.exe",
+      "installation": "portable wheel executable, no environment/PATH/registry changes",
+      "purpose": "read-only Python/native stack dump of a stalled synthetic unittest process; not a product runtime dependency"
+    }
+  }
+}

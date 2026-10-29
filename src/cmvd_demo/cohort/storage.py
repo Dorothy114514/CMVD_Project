@@ -45,8 +45,9 @@ def save_cohort(root, cohort, *, freeze=False, cancel=None):
               [{"research_id": s["research_id"], "cmvd_label": s["label"]} for s in cohort["samples"]])
     write_csv(run/"missingness.csv", ["research_id", "field", "reason"], cohort["missingness"])
     # Audit plans are distinct from frozen plans. Only the latter is a D6 input.
-    plan = {"schema_version": 1, "kind": "patient_partition_plan", "mode": report["mode"],
+    plan = {"schema_version": report.get("population", {}).get("protocol_version", 1), "kind": "patient_partition_plan", "mode": report["mode"],
             "frozen": freeze, "patients": cohort["patient_plan"], "audit_sha256": document_hash(report),
+            "population": report.get("population"),
             "input_sha256": report["input_sha256"], "project_sha256": report["project_sha256"],
             "contract_sha256": report["contract_sha256"],
             "cv_policy": {key: cohort["policy"][key] for key in ("n_splits", "random_seed")},

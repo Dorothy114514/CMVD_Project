@@ -7,7 +7,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/"src"))
 from PySide6.QtCore import QTimer, QEventLoop, QCoreApplication, QEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QMessageBox, QApplication
 from cmvd_demo.cohort import assemble_cohort, save_cohort
 from cmvd_demo.cohort.synthetic import create_synthetic_project
 from cmvd_demo.cohort.storage import load_frozen
@@ -35,7 +35,7 @@ def main():
     app = QApplication([sys.argv[0]])
     app.setQuitOnLastWindowClosed(False)
     app.setStyle("Fusion")
-    window = BrowserWindow()
+    window = BrowserWindow(unsaved_prompt=lambda action: QMessageBox.Discard)
     window.show()
     window.open_cohort()
     dialog = window.cohort_dialog

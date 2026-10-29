@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "contract_id": "d6-logistic-v1",
+  "feature_contract_id": "d5-candidate-v1",
+  "primary_model": "fusion",
+  "continuous_features": ["age_years", "rest_heart_rate_bpm", "ldl_c_mmol_l", "pet_mfr", "mr_mpri"],
+  "binary_features": ["hypertension", "diabetes", "smoking"],
+  "variants": {
+    "clinical": ["age_years", "hypertension", "diabetes", "smoking", "rest_heart_rate_bpm", "ldl_c_mmol_l"],
+    "clinical_pet": ["age_years", "hypertension", "diabetes", "smoking", "rest_heart_rate_bpm", "ldl_c_mmol_l", "pet_mfr"],
+    "clinical_mr": ["age_years", "hypertension", "diabetes", "smoking", "rest_heart_rate_bpm", "ldl_c_mmol_l", "mr_mpri"],
+    "fusion": ["age_years", "hypertension", "diabetes", "smoking", "rest_heart_rate_bpm", "ldl_c_mmol_l", "pet_mfr", "mr_mpri"]
+  },
+  "outer_splits": 3,
+  "inner_splits": 3,
+  "random_seed": 20261020,
+  "candidate_C": [0.01, 0.1, 1.0],
+  "selection_metric": "mean_inner_log_loss",
+  "tie_break": "smallest_C",
+  "solver": "lbfgs",
+  "l1_ratio": 0.0,
+  "max_iter": 2000,
+  "tol": 0.000001,
+  "threshold": 0.5,
+  "threshold_basis": "prespecified_engineering_rule_not_clinical_cutoff",
+  "bootstrap_replicates": 1000,
+  "missing_policy": "complete_case_no_imputation"
+}

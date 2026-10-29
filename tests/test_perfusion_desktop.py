@@ -1,3 +1,4 @@
+from test_desktop import discard_unsaved
 """Native Qt D4 tests with entirely generated signal truth."""
 
 import copy
@@ -24,7 +25,7 @@ from cmvd_demo.perfusion import load_json
 class PerfusionDesktopTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.w = BrowserWindow()
+        self.w = BrowserWindow(unsaved_prompt=discard_unsaved)
         self.f = self.w.feature_panel
         self.f.output_root = Path(self.temp.name)
         self.w.show()
@@ -77,7 +78,7 @@ class PerfusionDesktopTests(unittest.TestCase):
         self.f.protocol_review.setChecked(True)
         pair = self.f._mr_pair()
         self.assertEqual(pair["measurements"]["mr_mpri"]["value"], 2)
-        self.assertIn("MR MPRI（半定量）: 2",self.f.pair_summary.text())
+        self.assertIn("MR灌注储备指数（MPRI，半定量）: 2",self.f.pair_summary.text())
         ref = reference(pair)
         path = Path(self.temp.name)/"reference.json"
         path.write_text(json.dumps(ref), encoding="utf-8")

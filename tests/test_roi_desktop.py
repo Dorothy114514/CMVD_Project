@@ -1,3 +1,4 @@
+from test_desktop import discard_unsaved
 """Native Qt ROI editing, persistence and stale-result boundaries."""
 
 import copy
@@ -22,7 +23,7 @@ class RoiDesktopTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.w = BrowserWindow()
+        self.w = BrowserWindow(unsaved_prompt=discard_unsaved)
         self.w.roi_panel.output_root = Path(self.temp.name)
         self.w.show()
         self.w.open_synthetic()

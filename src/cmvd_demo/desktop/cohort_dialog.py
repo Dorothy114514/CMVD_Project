@@ -10,12 +10,14 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushB
 from cmvd_demo.cohort import assemble_cohort, save_cohort, export_templates
 from cmvd_demo.cohort.synthetic import create_synthetic_project
 from cmvd_demo.perfusion import load_json
+from cmvd_demo.paths import workspace_root
 from .tasks import TaskRunner
+from .presentation import PRODUCT_NAME, error_message
 
 
 ISSUES = {
     "manifest": "旧研究编号及处理清单", "associations": "患者与检查关联表", "clinical": "临床表",
-    "labels": "逐例医生诊断表", "perfusion": "D4特征登记与审核表", "partitions": "患者用途划分表",
+    "labels": "逐例医生诊断表", "perfusion": "灌注特征登记与审核表", "partitions": "患者用途划分表",
     "missingness": "临床缺失原因表",
     "reported_manifest_count_mismatch": "清单例数与申报例数未对齐",
     "policy_pending:reconciliation_reviewed": "病例对账尚未确认",
@@ -36,22 +38,35 @@ ISSUES = {
     "clinical_schema_not_confirmed": "临床字段及单位尚未确认",
     "clinical_provenance_missing": "临床资料时点或来源缺失",
     "physician_label_missing_invalid_or_unreviewed": "医生诊断缺失、定义不符或尚未审核",
-    "perfusion_measurement_review_missing": "D4特征缺失或测量尚未审核",
+    "perfusion_measurement_review_missing": "灌注特征缺失或测量尚未审核",
     "cohort_perfusion_branch_missing": "PET或MR分支缺失",
-    "cohort_perfusion_qc_pending": "灌注特征QC未通过",
+    "cohort_perfusion_qc_pending": "灌注特征质控未通过",
+    "association_not_reviewed": "患者与检查关联尚未审核",
+    "partition_missing_or_unreviewed": "患者用途缺失或尚未审核",
+    "exclusion_reason_missing": "尚未填写排除原因",
+    "invalid_patient_key": "患者关联代号无效",
+    "case_token_multiple_exams": "同一影像来源关联了多次检查，请核对",
+    "perfusion_snapshot_unreadable": "灌注分析结果无法读取，请核对完整保存目录",
 }
 
 
 def issue_label(code):
     if code.startswith("input_missing:"):
         return "缺少："+ISSUES.get(code.split(":", 1)[1], code)
-    return ISSUES.get(code, code)
+    if code.startswith(("clinical_missing:", "clinical_invalid:")):
+        field = code.split(":", 1)[1]
+        name = {"age_years": "年龄", "hypertension": "高血压", "diabetes": "糖尿病",
+                "smoking": "吸烟史", "rest_heart_rate_bpm": "静息心率", "ldl_c_mmol_l": "LDL-C"}.get(field, "临床字段")
+        return name+("缺失" if code.startswith("clinical_missing:") else "无效或单位不符")
+    if code.startswith("input_invalid:"):
+        return "资料格式或内容无效："+ISSUES.get(code.split(":")[1], "研究表格")
+    return ISSUES.get(code, "资料校验未通过，请查看导出的检查记录。")
 
 
 class CohortDialog(QDialog):
     def __init__(self, owner, workspace=None):
         super().__init__(owner)
-        self.workspace = Path(workspace) if workspace else Path(__file__).resolve().parents[3]
+        self.workspace = Path(workspace) if workspace else workspace_root()
         self.project_path = self.workspace/"configs/cohort_project.template.json"
         self.audit = None
         self.last_output = None
@@ -61,10 +76,10 @@ class CohortDialog(QDialog):
         self.runner.failed.connect(self._failed)
         self.runner.progress.connect(lambda rev, stage, done, total: self.status.setText(f"处理中 {done}/{total} · 可取消"))
         self.runner.idle.connect(self._idle)
-        self.setWindowTitle("D5 · 队列整理与患者划分")
+        self.setWindowTitle("研究队列与患者划分 · "+PRODUCT_NAME)
         self.resize(1100, 720)
         layout = QVBoxLayout(self)
-        title = QLabel("D5  /  开发队列与独立患者保留")
+        title = QLabel("研究队列")
         title.setObjectName("brand")
         layout.addWidget(title)
         self.mode_label = QLabel("真实队列 · 尚未校验")
@@ -102,9 +117,10 @@ class CohortDialog(QDialog):
         self.table.header().setSectionResizeMode(3, QHeaderView.Stretch)
         layout.addWidget(self.table, 1)
         bottom = QHBoxLayout()
-        self.export_button = QPushButton("重新校验并导出审计")
+        self.export_button = QPushButton("校验并导出检查记录")
         self.export_button.clicked.connect(lambda: self.run_action("export"))
-        self.freeze_button = QPushButton("重新校验并冻结患者划分")
+        self.freeze_button = QPushButton("校验并锁定患者划分")
+        self.freeze_button.setToolTip("锁定开发与独立测试用途及患者折，保存不可覆盖的划分快照。")
         self.freeze_button.setEnabled(False)
         self.freeze_button.clicked.connect(lambda: self.run_action("freeze"))
         bottom.addWidget(self.export_button)
@@ -120,7 +136,7 @@ class CohortDialog(QDialog):
         layout.addWidget(self.status)
 
     def _choose(self):
-        path, _ = QFileDialog.getOpenFileName(self, "打开受控队列配置", str(self.workspace/"outputs"), "JSON (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "选择研究队列配置", str(self.workspace/"outputs"), "队列配置 (*.json)")
         if path:
             self.select_project(path)
 
@@ -140,7 +156,8 @@ class CohortDialog(QDialog):
 
     def run_action(self, action):
         self._clear()
-        self.status.setText("正在处理本地受控表与快照…")
+        self.status.setToolTip("")
+        self.status.setText("正在核对本地研究表格与分析结果…")
         self.cancel_button.setEnabled(True)
         path, workspace = self.project_path, self.workspace
         def work(progress, cancel):
@@ -158,7 +175,7 @@ class CohortDialog(QDialog):
         self.output_button.setEnabled(self.last_output is not None)
         if payload["action"] == "templates":
             self.mode_label.setText("真实队列 · 已导出空白补录表")
-            self.summary.setText("没有创建旧清单或真实编号。补录表与队列配置已写入 outputs/cohort_requests/ 的新目录。")
+            self.summary.setText("空白补录表与队列配置已保存。点击“打开本次输出目录”查看；真实编号仍沿用原研究清单。")
             self.status.setText("已选中新配置；填写后点击“校验队列”。旧研究清单仍需找回。")
             return
         self.audit = audit = payload["audit"]
@@ -166,28 +183,29 @@ class CohortDialog(QDialog):
         synthetic = report["mode"] == "synthetic_fixture"
         self.mode_label.setText("完全合成队列 · 仅验证工程流程 · 不可用于真实训练" if synthetic else "真实队列 · 本地受控资料")
         self.summary.setText(f'清单检查 {report["manifest_case_count"]} 次 / 关联患者 {report["associated_patient_count"]} 人；'
-                             f'开发完整行 {report["development_included_count"]}；保留独立患者 {report["reserved_independent_patients"]} 人。'
+                             f'完整开发病例 {report["development_included_count"]}；保留独立患者 {report["reserved_independent_patients"]} 人。'
                              f'患者交叉验证：{"可构建" if report["folds"]["ready"] else "条件不足"}。')
         messages = [issue_label(code) for code in report["issues"]]
         if synthetic:
-            messages.insert(0, "所有病例、临床值、标签与测量均为合成；D4仍保留工程体模标记，真实特征就绪状态为否。")
+            messages.insert(0, "病例、临床值、标签与测量均为完全合成示例，灌注结果保留合成标记，不能用于真实训练。")
         if not report["freeze_ready"]:
-            messages.append("患者划分暂不可冻结：需完整关联与对账、明确开发/独立用途及人工复核。")
+            messages.append("患者划分暂不可锁定：需完成关联与对账、明确开发/独立用途及人工复核。")
         messages.append("没有执行填补、标准化、训练或临床验证。")
         self.issues.setPlainText("\n".join(messages))
         for row in audit["cases"]:
             partition = {"development": "开发", "independent_test": "独立保留", "excluded": "排除"}.get(row["partition"], "未分配")
-            status = "合成工程行" if synthetic and row["included"] else "候选完整行" if row["included"] else " | ".join(issue_label(c) for c in row["reasons"])
+            status = "合成示例资料完整" if synthetic and row["included"] else "候选资料完整" if row["included"] else " | ".join(issue_label(c) for c in row["reasons"])
             self.table.addTopLevelItem(QTreeWidgetItem([row["research_id"], row["patient_key"], partition, status]))
         frozen = payload["action"] == "freeze"
-        self.status.setText("已冻结患者划分，输出位于 outputs/cohort/ 新目录。" if frozen else
-                            "已导出审计，输出位于 outputs/cohort/ 新目录。" if self.last_output else "校验结束；可导出审计与逐例缺失原因。")
+        self.status.setText("已锁定患者划分，可打开本次输出目录查看。" if frozen else
+                            "检查记录已保存，可打开本次输出目录查看。" if self.last_output else "校验结束，可导出检查记录与逐例缺失原因。")
         if synthetic:
             self.status.setText(self.status.text()+" 完全合成示例不能进入真实训练。")
 
     def _failed(self, revision, code):
         self.last_error = code
-        self.status.setText("未完成 · "+code+" · 未发布有效队列")
+        self.status.setText(error_message(code)+" 尚未生成有效队列。")
+        self.status.setToolTip("技术代码："+code)
 
     def open_output(self):
         if self.last_output is not None:

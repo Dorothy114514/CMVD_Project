@@ -8,7 +8,7 @@ import numpy as np
 from cmvd_demo.io import DicomReadError, ReadCancelled, scan_case, build_grid, build_cine_stack
 
 KINDS = {"pet_dynamic": "PET 动态", "pet_gated": "PET 门控", "pet_static": "PET 静态",
-         "mr_perfusion": "MR 灌注", "mr_cine": "MR cine", "cine_stack": "短轴 cine 组合",
+         "mr_perfusion": "MR 灌注", "mr_cine": "MR 心脏电影", "cine_stack": "短轴心脏电影组合",
          "mr_other": "其他 MR（仅索引）", "secondary_capture": "截图（仅索引）",
          "unsupported_sop_class": "其他对象（仅索引）", "unsupported_multiframe": "多帧（暂不支持）"}
 SUPPORTED = {"pet_dynamic", "pet_gated", "pet_static", "mr_perfusion", "mr_cine", "cine_stack"}
@@ -37,7 +37,7 @@ def choices_from_scan(scan):
             sax[key].append(series)
     for index, group in enumerate(sax.values(), 1):
         if len(group) > 1:
-            choices.append(Choice(f"cine-stack-{index}", f"短轴 cine 组合候选 {index}", "cine_stack", "unknown",
+            choices.append(Choice(f"cine-stack-{index}", f"短轴心脏电影组合 {index}（待核对）", "cine_stack", "unknown",
                                   sum(len(s.objects) for s in group), tuple(group)))
     return choices
 

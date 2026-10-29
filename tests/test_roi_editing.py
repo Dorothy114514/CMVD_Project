@@ -1,3 +1,4 @@
+from test_desktop import discard_unsaved
 """Mouse-driven native Qt regression for point capture, navigation and undo."""
 
 import copy
@@ -38,7 +39,7 @@ def drag(widget,start,end,button=Qt.LeftButton):
 class RoiEditingTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
-        self.w=BrowserWindow()
+        self.w=BrowserWindow(unsaved_prompt=discard_unsaved)
         self.p=self.w.roi_panel
         self.p.output_root=Path(self.temp.name)
         self.w.show()

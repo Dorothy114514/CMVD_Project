@@ -9,6 +9,7 @@ from threading import Event
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
 from cmvd_demo.io import DicomReadError, ReadCancelled
+from .diagnostics import error_code, record_error
 
 
 class _Signals(QObject):
@@ -17,11 +18,12 @@ class _Signals(QObject):
 
 
 class _Work(QRunnable):
-    def __init__(self, revision, function):
+    def __init__(self, revision, function, stage):
         super().__init__()
         self.revision, self.function = revision, function
         self.cancelled = Event()
         self.signals = _Signals()
+        self.stage = stage
 
     def run(self):
         payload, error = None, ""
@@ -36,7 +38,9 @@ class _Work(QRunnable):
                 raise ReadCancelled()
         except Exception as exception:
             payload = None
-            error = exception.code if isinstance(exception, DicomReadError) else "unexpected_" + type(exception).__name__
+            error = error_code(exception)
+            if not isinstance(exception, ReadCancelled):
+                record_error(error, self.stage)
         self.signals.finished.emit(self.revision, payload, error)
 
 
@@ -53,6 +57,7 @@ class TaskRunner(QObject):
         self.revision = 0
         self._active = None
         self._pending = None
+        self.stage = type(parent).__name__ if parent is not None else 'background'
 
     @property
     def busy(self):
@@ -73,7 +78,7 @@ class TaskRunner(QObject):
     def _start_pending(self):
         if self._active is not None or self._pending is None:
             return
-        self._active = work = _Work(*self._pending)
+        self._active = work = _Work(*self._pending, self.stage)
         self._pending = None
         work.signals.finished.connect(self._finished)
         work.signals.progress.connect(self._progress)
